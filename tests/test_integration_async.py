@@ -1,0 +1,307 @@
+"""Asynchronous integration tests against a real gateway.
+
+Run with:  poetry run pytest tests/test_integration_async.py -v -m integration
+"""
+
+from __future__ import annotations
+
+import io
+import uuid
+
+import pandas as pd
+import pytest
+
+from iyree import (
+    AsyncIyreeClient,
+    IyreeNotFoundError,
+)
+from test_integration_sync import (
+    GATEWAY_HOST,
+    API_KEY,
+    TABLE,
+    COLUMNS,
+    HAS_PYARROW,
+    generate_fact_rows,
+)
+
+pytestmark = pytest.mark.integration
+
+
+@pytest.fixture
+async def client():
+    c = AsyncIyreeClient(
+        api_key=API_KEY, gateway_host=GATEWAY_HOST,
+        timeout=60.0, stream_load_timeout=120.0,
+        max_retries=5,
+    )
+    yield c
+    await c.close()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# DWH — SQL (advanced)
+# ══════════════════════════════════════════════════════════════════════
+
+class TestAsyncDwhSqlIntegration:
+    async def test_select_one(self, client: AsyncIyreeClient):
+        result = await client.dwh.sql("SELECT 1 AS n")
+        assert int(result.rows[0][0]) == 1
+
+    async def test_query_fact_table(self, client: AsyncIyreeClient):
+        result = await client.dwh.sql(
+            f"SELECT organization_id, product_id, balance "
+            f"FROM {TABLE} LIMIT 5"
+        )
+        assert len(result.columns) == 3
+        assert len(result.rows) <= 5
+
+    async def test_to_dicts(self, client: AsyncIyreeClient):
+        result = await client.dwh.sql(
+            f"SELECT organization_id, balance FROM {TABLE} LIMIT 3"
+        )
+        dicts = result.to_dicts()
+        assert isinstance(dicts, list)
+        if dicts:
+            assert "organization_id" in dicts[0]
+
+    async def test_aggregation_group_by(self, client: AsyncIyreeClient):
+        result = await client.dwh.sql(
+            f"SELECT organization_id, COUNT(*) AS cnt, SUM(balance) AS total "
+            f"FROM {TABLE} "
+            f"GROUP BY organization_id "
+            f"ORDER BY cnt DESC LIMIT 10"
+        )
+        assert len(result.columns) == 3
+        for row in result.rows:
+            assert int(row[1]) > 0
+
+    async def test_subquery_derived_table(self, client: AsyncIyreeClient):
+        result = await client.dwh.sql(
+            f"SELECT sub.org_id, sub.total_balance "
+            f"FROM ("
+            f"  SELECT organization_id AS org_id, SUM(balance) AS total_balance "
+            f"  FROM {TABLE} GROUP BY organization_id"
+            f") sub "
+            f"WHERE sub.total_balance > 0 "
+            f"ORDER BY sub.total_balance DESC LIMIT 10"
+        )
+        col_names = [c.name for c in result.columns]
+        assert "org_id" in col_names
+
+    async def test_order_by_asc(self, client: AsyncIyreeClient):
+        result = await client.dwh.sql(
+            f"SELECT balance FROM {TABLE} "
+            f"WHERE balance IS NOT NULL "
+            f"ORDER BY balance ASC LIMIT 20"
+        )
+        balances = [float(r[0]) for r in result.rows]
+        assert balances == sorted(balances)
+
+    async def test_window_function(self, client: AsyncIyreeClient):
+        result = await client.dwh.sql(
+            f"SELECT organization_id, balance, "
+            f"  ROW_NUMBER() OVER (PARTITION BY organization_id ORDER BY balance DESC) AS rn "
+            f"FROM {TABLE} LIMIT 50"
+        )
+        col_names = [c.name for c in result.columns]
+        assert "rn" in col_names
+
+    async def test_case_expression(self, client: AsyncIyreeClient):
+        result = await client.dwh.sql(
+            f"SELECT balance, "
+            f"  CASE WHEN balance >= 500 THEN 'high' "
+            f"       WHEN balance >= 100 THEN 'medium' "
+            f"       ELSE 'low' END AS tier "
+            f"FROM {TABLE} LIMIT 10"
+        )
+        for row in result.rows:
+            assert row[1] in ("high", "medium", "low")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# DWH — Stream Load (insert)
+# ══════════════════════════════════════════════════════════════════════
+
+class TestAsyncDwhInsertIntegration:
+    async def test_json_insert(self, client: AsyncIyreeClient):
+        label = f"sdk_async_json_{uuid.uuid4().hex[:12]}"
+        data = [
+            {
+                "organization_id": 8888, "terminal_group_id": 111,
+                "product_id": 222, "product_size_id": 3,
+                "date_add": "2025-03-15", "loaded_at": "2025-03-15 12:00:00",
+                "balance": 42.5,
+            },
+            {
+                "organization_id": 8889, "terminal_group_id": 112,
+                "product_id": 223, "product_size_id": 4,
+                "date_add": "2025-03-16", "loaded_at": "2025-03-16 12:00:00",
+                "balance": 99.9,
+            },
+        ]
+        result = await client.dwh.insert(TABLE, data, label=label)
+        assert result.status == "Success", f"Stream Load failed: {result.message}"
+        assert result.number_loaded_rows == 2
+
+    async def test_bulk_insert_3000_rows(self, client: AsyncIyreeClient):
+        df = generate_fact_rows(3_000, org_offset=8500)
+        data = df.to_dict(orient="records")
+        label = f"sdk_async_bulk_{uuid.uuid4().hex[:12]}"
+        result = await client.dwh.insert(TABLE, data, label=label)
+        assert result.status == "Success", f"Stream Load failed: {result.message}"
+        assert result.number_loaded_rows == 3_000
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Cube
+# ══════════════════════════════════════════════════════════════════════
+
+class TestAsyncCubeIntegration:
+    async def test_load_raw_dict(self, client: AsyncIyreeClient):
+        query = {
+            "measures": [
+                "dm_order.dish_sum_int",
+                "dm_order.dish_sum_int_less_1m_null",
+            ],
+            "dimensions": ["dm_order.department_name"],
+            "timeDimensions": [{
+                "dimension": "dm_order.open_date_typed",
+                "dateRange": ["2025-12-01", "2025-12-21"],
+            }],
+            "filters": [],
+        }
+        result = await client.cube.load(query)
+        assert isinstance(result.data, list)
+
+    async def test_load_with_query_builder(self, client: AsyncIyreeClient):
+        from iyree import Cube, Query, TimeDimension, DateRange
+
+        dm_order = Cube("dm_order")
+        query = Query(
+            measures=[dm_order.measure("dish_sum_int")],
+            dimensions=[dm_order.dimension("department_name")],
+            time_dimensions=[
+                TimeDimension(
+                    dm_order.dimension("open_date_typed"),
+                    date_range=DateRange(
+                        start_date="2025-12-01", end_date="2025-12-21",
+                    ),
+                )
+            ],
+        )
+        result = await client.cube.load(query)
+        assert isinstance(result.data, list)
+
+    @pytest.mark.xfail(reason="Cube meta endpoint may not be registered on the gateway")
+    async def test_meta(self, client: AsyncIyreeClient):
+        meta = await client.cube.meta()
+        assert isinstance(meta, dict)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# S3
+# ══════════════════════════════════════════════════════════════════════
+
+class TestAsyncS3Integration:
+    TEST_PREFIX = "sdk-async-integration-test/"
+
+    async def test_upload_and_download(self, client: AsyncIyreeClient):
+        key = f"{self.TEST_PREFIX}{uuid.uuid4().hex}.txt"
+        content = b"async hello from iyree sdk"
+
+        await client.s3.upload_object(key, content, content_type="text/plain")
+        downloaded = await client.s3.download_object(key)
+        assert downloaded == content
+        await client.s3.delete_objects([key])
+
+    async def test_list_objects(self, client: AsyncIyreeClient):
+        key = f"{self.TEST_PREFIX}list-{uuid.uuid4().hex[:8]}.txt"
+        await client.s3.upload_object(key, b"async list test")
+
+        result = await client.s3.list_objects(prefix=self.TEST_PREFIX, max_keys=100)
+        keys = [obj.key for obj in result.objects]
+        assert key in keys
+        await client.s3.delete_objects([key])
+
+    async def test_list_objects_iter(self, client: AsyncIyreeClient):
+        key = f"{self.TEST_PREFIX}iter-{uuid.uuid4().hex[:8]}.txt"
+        await client.s3.upload_object(key, b"async iter test")
+
+        found = False
+        async for obj in client.s3.list_objects_iter(prefix=self.TEST_PREFIX):
+            if obj.key == key:
+                found = True
+                break
+        assert found
+        await client.s3.delete_objects([key])
+
+    async def test_copy_and_delete(self, client: AsyncIyreeClient):
+        src = f"{self.TEST_PREFIX}cp-src-{uuid.uuid4().hex[:8]}.txt"
+        dst = f"{self.TEST_PREFIX}cp-dst-{uuid.uuid4().hex[:8]}.txt"
+
+        await client.s3.upload_object(src, b"copy me async")
+        result = await client.s3.copy_object(src, dst)
+        assert result.destination_key == dst
+
+        downloaded = await client.s3.download_object(dst)
+        assert downloaded == b"copy me async"
+        await client.s3.delete_objects([src, dst])
+
+    @pytest.mark.skipif(not HAS_PYARROW, reason="pyarrow required for parquet")
+    async def test_upload_large_parquet(self, client: AsyncIyreeClient):
+        """Upload 2 000-row parquet and verify round-trip."""
+        key = f"{self.TEST_PREFIX}bulk-pq-{uuid.uuid4().hex[:8]}.parquet"
+        df = generate_fact_rows(2_000, org_offset=7500)
+
+        await client.s3.upload_dataframe(key, df, format="parquet")
+        data = await client.s3.download_object(key)
+
+        df_back = pd.read_parquet(io.BytesIO(data))
+        assert len(df_back) == 2_000
+        await client.s3.delete_objects([key])
+
+
+# ══════════════════════════════════════════════════════════════════════
+# KV
+# ══════════════════════════════════════════════════════════════════════
+
+class TestAsyncKvIntegration:
+    VARIABLE = "myvar"
+
+    async def test_put_get_delete_lifecycle(self, client: AsyncIyreeClient):
+        doc_key = f"async-sdk-test-{uuid.uuid4().hex[:12]}"
+        data = {"greeting": "hello async", "count": 7}
+
+        returned_key = await client.kv.put(self.VARIABLE, data, key=doc_key)
+        assert returned_key == doc_key
+
+        doc = await client.kv.get(self.VARIABLE, doc_key)
+        assert doc.key == doc_key
+        assert doc.data["greeting"] == "hello async"
+
+        deleted = await client.kv.delete(self.VARIABLE, doc_key)
+        assert deleted is True
+
+    async def test_exists(self, client: AsyncIyreeClient):
+        doc_key = f"async-exists-{uuid.uuid4().hex[:12]}"
+        await client.kv.put(self.VARIABLE, {"x": 1}, key=doc_key)
+        assert await client.kv.exists(self.VARIABLE, doc_key) is True
+        assert await client.kv.exists(self.VARIABLE, "nonexistent-key") is False
+        await client.kv.delete(self.VARIABLE, doc_key)
+
+    async def test_get_not_found(self, client: AsyncIyreeClient):
+        with pytest.raises(IyreeNotFoundError):
+            await client.kv.get(self.VARIABLE, "this-key-does-not-exist")
+
+    async def test_patch(self, client: AsyncIyreeClient):
+        doc_key = f"async-patch-{uuid.uuid4().hex[:12]}"
+        await client.kv.put(
+            self.VARIABLE, {"name": "Alice", "score": 10}, key=doc_key,
+        )
+
+        updated = await client.kv.patch(
+            self.VARIABLE, doc_key, set={"name": "Bob"}, inc={"score": 5},
+        )
+        assert updated.data["name"] == "Bob"
+        assert updated.data["score"] == 15
+        await client.kv.delete(self.VARIABLE, doc_key)

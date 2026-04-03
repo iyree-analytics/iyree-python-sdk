@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "iyree"
+version = "0.1.0"
+description = "Python SDK for the IYREE BI analytics platform"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = [
+    "httpx>=0.24",
+    "tenacity>=8.0",
+]
+
+[project.optional-dependencies]
+pandas = ["pandas>=1.5"]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "respx>=0.20",
+    "pandas>=1.5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/iyree"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["tests"]
+markers = [
+    "integration: integration tests that hit a real gateway (deselected by default)",
+]
