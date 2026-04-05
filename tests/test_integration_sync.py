@@ -619,3 +619,45 @@ class TestKvIntegration:
         doc = client.kv.get(self.VARIABLE, doc_key)
         assert doc.data["v"] == 2
         client.kv.delete(self.VARIABLE, doc_key)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Module-level API (iyree.init / iyree.dwh / iyree.cube / ...)
+# ══════════════════════════════════════════════════════════════════════
+
+class TestModuleLevelApiIntegration:
+    """Verify the ``iyree.init()`` → ``iyree.dwh.sql()`` pattern works end-to-end."""
+
+    def setup_method(self):
+        import iyree
+        iyree.init(api_key=API_KEY, gateway_host=GATEWAY_HOST, timeout=60.0, max_retries=5)
+
+    def teardown_method(self):
+        import iyree
+        iyree.close()
+
+    def test_dwh_sql_via_module(self):
+        import iyree
+        result = iyree.dwh.sql(f"SELECT COUNT(*) AS cnt FROM {TABLE}")
+        assert int(result.rows[0][0]) >= 0
+
+    def test_cube_load_via_module(self):
+        import iyree
+        result = iyree.cube.load({
+            "measures": ["dm_order.dish_sum_int"],
+            "dimensions": ["dm_order.department_name"],
+            "timeDimensions": [{
+                "dimension": "dm_order.open_date_typed",
+                "dateRange": ["2025-12-01", "2025-12-21"],
+            }],
+            "filters": [],
+        })
+        assert isinstance(result.data, list)
+
+    def test_kv_via_module(self):
+        import iyree
+        doc_key = f"module-api-test-{uuid.uuid4().hex[:12]}"
+        iyree.kv.put("myvar", {"module": True}, key=doc_key)
+        doc = iyree.kv.get("myvar", doc_key)
+        assert doc.data["module"] is True
+        iyree.kv.delete("myvar", doc_key)
