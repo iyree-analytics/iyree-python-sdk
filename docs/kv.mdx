@@ -1,5 +1,5 @@
 ---
-title: "KV"
+title: "Key-Value document store"
 description: "Key-Value document store"
 ---
 
@@ -220,6 +220,214 @@ The updated document.
 
 ---
 
+### `list`
+
+List documents with optional filtering, ordering, and cursor-based pagination. Filter on secondary indexes using `where` conditions.
+
+```python
+page = client.kv.list(
+    "users",
+    where=[{"index_name": "role", "value": "admin"}],
+    order_by={"field": "created_at", "direction": "desc"},
+    limit=50,
+)
+for doc in page.items:
+    print(doc.key, doc.data)
+```
+
+#### Parameters
+
+<ResponseField name="variable" type="str" required>
+  KV store variable (namespace).
+</ResponseField>
+
+<ResponseField name="where" type="List[Dict[str, Any]]">
+  Filter conditions on secondary indexes. Each dict should contain:
+
+  <Expandable title="Where condition structure">
+    <ResponseField name="index_name" type="str" required>
+      Name of the secondary index to filter on.
+    </ResponseField>
+    <ResponseField name="value" type="Any" required>
+      Value to compare against. `datetime` objects are automatically converted to ISO-8601 strings.
+    </ResponseField>
+    <ResponseField name="op" type="str" default='"eq"'>
+      Comparison operator: `eq`, `gt`, `gte`, `lt`, `lte`, or `between`.
+    </ResponseField>
+    <ResponseField name="value_to" type="Any">
+      Upper bound for `between` operator. `datetime` objects are automatically converted to ISO-8601 strings.
+    </ResponseField>
+  </Expandable>
+
+  ```python
+  where=[
+      {"index_name": "region", "value": "US"},
+      {"index_name": "score", "value": 50, "op": "gte"},
+      {"index_name": "created", "value": "2024-01-01", "op": "between", "value_to": "2024-12-31"},
+  ]
+  ```
+</ResponseField>
+
+<ResponseField name="order_by" type="Dict[str, str]">
+  Sort directive.
+
+  <Expandable title="Order by structure">
+    <ResponseField name="field" type="str" required>
+      Field to sort by: `updated_at` or `created_at`.
+    </ResponseField>
+    <ResponseField name="direction" type="str" required>
+      Sort direction: `asc` or `desc`.
+    </ResponseField>
+  </Expandable>
+
+  ```python
+  order_by={"field": "updated_at", "direction": "desc"}
+  ```
+</ResponseField>
+
+<ResponseField name="limit" type="int" default="100">
+  Maximum documents per page (1–1000).
+</ResponseField>
+
+<ResponseField name="cursor" type="str">
+  Opaque cursor from a previous page for pagination. Use `page.cursor` from the previous result.
+</ResponseField>
+
+<ResponseField name="select" type="List[str]">
+  Subset of top-level data keys to return. When specified, only these fields are included in `doc.data`.
+
+  ```python
+  select=["name", "email"]
+  ```
+</ResponseField>
+
+#### Returns `KvListResult`
+
+<ResponseField name="items" type="List[KvDocument]">
+  Documents in this page.
+</ResponseField>
+
+<ResponseField name="cursor" type="str">
+  Opaque cursor for the next page, or `None` if this is the last page.
+</ResponseField>
+
+<ResponseField name="has_more" type="bool">
+  Whether more pages are available.
+</ResponseField>
+
+---
+
+### `list_iter`
+
+Auto-paginating iterator over all documents matching the query. Handles cursor pagination automatically.
+
+```python
+for doc in client.kv.list_iter("users", where=[{"index_name": "role", "value": "admin"}]):
+    print(doc.key, doc.data)
+```
+
+#### Parameters
+
+<ResponseField name="variable" type="str" required>
+  KV store variable (namespace).
+</ResponseField>
+
+<ResponseField name="where" type="List[Dict[str, Any]]">
+  Filter conditions on secondary indexes (same structure as [`list`](#list)).
+</ResponseField>
+
+<ResponseField name="order_by" type="Dict[str, str]">
+  Sort directive (same structure as [`list`](#list)).
+</ResponseField>
+
+<ResponseField name="limit" type="int" default="100">
+  Maximum documents per page (controls internal page size).
+</ResponseField>
+
+<ResponseField name="select" type="List[str]">
+  Subset of top-level data keys to return.
+</ResponseField>
+
+#### Yields `KvDocument`
+
+Yields individual `KvDocument` instances across all pages.
+
+---
+
+### `bulk_get`
+
+Fetch multiple documents by keys in a single request.
+
+```python
+docs = client.kv.bulk_get("users", ["alice", "bob", "charlie"])
+for key, doc in docs.items():
+    print(key, doc.data)
+```
+
+#### Parameters
+
+<ResponseField name="variable" type="str" required>
+  KV store variable (namespace).
+</ResponseField>
+
+<ResponseField name="keys" type="List[str]" required>
+  Document keys to fetch.
+</ResponseField>
+
+#### Returns `Dict[str, KvDocument]`
+
+A dict mapping each found key to its `KvDocument`. Keys that do not exist are omitted from the result.
+
+---
+
+### `bulk_put`
+
+Create or upsert multiple documents in a single request.
+
+```python
+keys = client.kv.bulk_put("users", [
+    {"key": "alice", "data": {"name": "Alice", "role": "admin"}},
+    {"key": "bob", "data": {"name": "Bob", "role": "user"}, "ttl": 86400},
+    {"data": {"name": "Charlie"}},  # auto-generated key
+])
+print(keys)  # ["alice", "bob", "<auto-generated>"]
+```
+
+#### Parameters
+
+<ResponseField name="variable" type="str" required>
+  KV store variable (namespace).
+</ResponseField>
+
+<ResponseField name="items" type="List[Dict[str, Any]]" required>
+  List of document dicts. Each dict must contain at minimum a `data` key.
+
+  <Expandable title="Item structure">
+    <ResponseField name="data" type="Any" required>
+      Document payload.
+    </ResponseField>
+    <ResponseField name="key" type="str">
+      Document key. Auto-generated if omitted.
+    </ResponseField>
+    <ResponseField name="indexes" type="Dict[str, Any]">
+      Index fields. `datetime` objects are automatically converted to ISO-8601 strings.
+    </ResponseField>
+    <ResponseField name="ttl" type="int">
+      Time-to-live in seconds.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="upsert" type="bool" default="True">
+  If `True` (default), overwrite existing documents with the same key.
+</ResponseField>
+
+#### Returns `List[str]`
+
+List of document keys in the same order as the input `items`.
+
+---
+
 ## Examples
 
 <CodeGroup>
@@ -270,6 +478,46 @@ doc = client.kv.get("counters", "homepage")
 print(doc.data)  # {"views": 2, "clicks": 1}
 ```
 
+```python List with filters
+page = client.kv.list(
+    "orders",
+    where=[
+        {"index_name": "status", "value": "active"},
+        {"index_name": "total", "value": 100, "op": "gte"},
+    ],
+    order_by={"field": "created_at", "direction": "desc"},
+    limit=20,
+    select=["customer_name", "total"],
+)
+for doc in page.items:
+    print(doc.key, doc.data)
+
+# Next page
+if page.has_more:
+    next_page = client.kv.list("orders", cursor=page.cursor)
+```
+
+```python Auto-paginating iterator
+for doc in client.kv.list_iter("logs", order_by={"field": "created_at", "direction": "asc"}):
+    print(doc.key, doc.data)
+```
+
+```python Bulk get
+docs = client.kv.bulk_get("users", ["alice", "bob", "missing_key"])
+print(docs.keys())  # dict_keys(["alice", "bob"]) — missing keys are omitted
+for key, doc in docs.items():
+    print(f"{key}: {doc.data['name']}")
+```
+
+```python Bulk put
+keys = client.kv.bulk_put("products", [
+    {"key": "prod_1", "data": {"name": "Widget", "price": 9.99}, "indexes": {"category": "tools"}},
+    {"key": "prod_2", "data": {"name": "Gadget", "price": 19.99}, "ttl": 86400},
+    {"data": {"name": "Unnamed"}},
+], upsert=True)
+print(keys)  # ["prod_1", "prod_2", "<auto-generated>"]
+```
+
 ```python Async
 from iyree import AsyncIyreeClient
 
@@ -277,6 +525,17 @@ async with AsyncIyreeClient(api_key="my-key") as client:
     key = await client.kv.put("cache", {"result": [1, 2, 3]}, key="data")
     doc = await client.kv.get("cache", "data")
     print(doc.data)
+
+    # Async list iterator
+    async for doc in client.kv.list_iter("cache"):
+        print(doc.key)
+
+    # Async bulk operations
+    docs = await client.kv.bulk_get("cache", ["data", "other"])
+    keys = await client.kv.bulk_put("cache", [
+        {"key": "a", "data": {"v": 1}},
+        {"key": "b", "data": {"v": 2}},
+    ])
 ```
 
 </CodeGroup>
