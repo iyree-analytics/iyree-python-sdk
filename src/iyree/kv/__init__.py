@@ -1,7 +1,7 @@
 """IYREE Key-Value store sub-client."""
 
-from iyree._types import KvDocument
+from iyree._types import KvDocument, KvListResult
 from iyree.kv._async import AsyncKvClient
 from iyree.kv._sync import KvClient
 
-__all__ = ["KvClient", "AsyncKvClient", "KvDocument"]
+__all__ = ["KvClient", "AsyncKvClient", "KvDocument", "KvListResult"]

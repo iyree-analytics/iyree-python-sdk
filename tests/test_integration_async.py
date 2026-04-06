@@ -27,12 +27,21 @@ from test_integration_sync import (
 pytestmark = pytest.mark.integration
 
 
+@pytest.fixture(autouse=True)
+async def _rate_limit_pause():
+    """Delay between tests to avoid hitting gateway rate limits."""
+    import asyncio
+    await asyncio.sleep(1)
+    yield
+    await asyncio.sleep(1)
+
+
 @pytest.fixture
 async def client():
     c = AsyncIyreeClient(
         api_key=API_KEY, gateway_host=GATEWAY_HOST,
         timeout=60.0, stream_load_timeout=120.0,
-        max_retries=5,
+        max_retries=8,
     )
     yield c
     await c.close()
@@ -305,3 +314,170 @@ class TestAsyncKvIntegration:
         assert updated.data["name"] == "Bob"
         assert updated.data["score"] == 15
         await client.kv.delete(self.VARIABLE, doc_key)
+
+    # ── List ─────────────────────────────────────────────────────────
+
+    async def test_list_basic(self, client: AsyncIyreeClient):
+        prefix = uuid.uuid4().hex[:8]
+        keys = [f"al-{prefix}-{i}" for i in range(3)]
+        for k in keys:
+            await client.kv.put(self.VARIABLE, {"i": k}, key=k)
+
+        result = await client.kv.list(self.VARIABLE, limit=100)
+        found = {d.key for d in result.items}
+        for k in keys:
+            assert k in found
+
+        for k in keys:
+            await client.kv.delete(self.VARIABLE, k)
+
+    async def test_list_iter(self, client: AsyncIyreeClient):
+        prefix = uuid.uuid4().hex[:8]
+        keys = [f"ali-{prefix}-{i}" for i in range(4)]
+        for k in keys:
+            await client.kv.put(self.VARIABLE, {"x": 1}, key=k)
+
+        found = set()
+        async for doc in client.kv.list_iter(self.VARIABLE, limit=2):
+            found.add(doc.key)
+        for k in keys:
+            assert k in found
+
+        for k in keys:
+            await client.kv.delete(self.VARIABLE, k)
+
+    async def test_list_with_select(self, client: AsyncIyreeClient):
+        doc_key = f"asel-{uuid.uuid4().hex[:12]}"
+        await client.kv.put(
+            self.VARIABLE,
+            {"name": "Alice", "age": 30, "city": "Berlin"},
+            key=doc_key,
+        )
+        result = await client.kv.list(self.VARIABLE, select=["name"])
+        target = next((d for d in result.items if d.key == doc_key), None)
+        assert target is not None
+        assert "name" in target.data
+        assert "city" not in target.data
+        await client.kv.delete(self.VARIABLE, doc_key)
+
+    async def test_list_with_index_filter(self, client: AsyncIyreeClient):
+        prefix = uuid.uuid4().hex[:8]
+        k_a = f"awh-{prefix}-a"
+        k_b = f"awh-{prefix}-b"
+        await client.kv.put(
+            self.VARIABLE, {"v": "a"}, key=k_a,
+            indexes={"color": "red"},
+        )
+        await client.kv.put(
+            self.VARIABLE, {"v": "b"}, key=k_b,
+            indexes={"color": "blue"},
+        )
+
+        result = await client.kv.list(
+            self.VARIABLE,
+            where=[{"index_name": "color", "op": "eq", "value": "red"}],
+        )
+        found = {d.key for d in result.items}
+        assert k_a in found
+        assert k_b not in found
+
+        await client.kv.delete(self.VARIABLE, k_a)
+        await client.kv.delete(self.VARIABLE, k_b)
+
+    async def test_list_with_datetime_index_filter(self, client: AsyncIyreeClient):
+        from datetime import datetime as dt
+        prefix = uuid.uuid4().hex[:8]
+        k1 = f"adt-{prefix}-1"
+        k2 = f"adt-{prefix}-2"
+        await client.kv.put(
+            self.VARIABLE, {"v": 1}, key=k1,
+            indexes={"ts": dt(2024, 1, 1)},
+        )
+        await client.kv.put(
+            self.VARIABLE, {"v": 2}, key=k2,
+            indexes={"ts": dt(2025, 6, 1)},
+        )
+
+        result = await client.kv.list(
+            self.VARIABLE,
+            where=[{"index_name": "ts", "op": "gte", "value": dt(2025, 1, 1)}],
+        )
+        found = {d.key for d in result.items}
+        assert k2 in found
+        assert k1 not in found
+
+        await client.kv.delete(self.VARIABLE, k1)
+        await client.kv.delete(self.VARIABLE, k2)
+
+    # ── Bulk get ─────────────────────────────────────────────────────
+
+    async def test_bulk_get(self, client: AsyncIyreeClient):
+        prefix = uuid.uuid4().hex[:8]
+        keys = [f"abg-{prefix}-{i}" for i in range(3)]
+        for k in keys:
+            await client.kv.put(self.VARIABLE, {"k": k}, key=k)
+
+        result = await client.kv.bulk_get(self.VARIABLE, keys)
+        assert len(result) == 3
+        for k in keys:
+            assert k in result
+
+        for k in keys:
+            await client.kv.delete(self.VARIABLE, k)
+
+    async def test_bulk_get_partial(self, client: AsyncIyreeClient):
+        doc_key = f"abgp-{uuid.uuid4().hex[:12]}"
+        await client.kv.put(self.VARIABLE, {"x": 1}, key=doc_key)
+
+        result = await client.kv.bulk_get(
+            self.VARIABLE, [doc_key, "no-such-key-xyz"],
+        )
+        assert doc_key in result
+        assert "no-such-key-xyz" not in result
+
+        await client.kv.delete(self.VARIABLE, doc_key)
+
+    # ── Bulk put ─────────────────────────────────────────────────────
+
+    async def test_bulk_put(self, client: AsyncIyreeClient):
+        prefix = uuid.uuid4().hex[:8]
+        items = [
+            {"data": {"n": i}, "key": f"abp-{prefix}-{i}"}
+            for i in range(4)
+        ]
+        keys = await client.kv.bulk_put(self.VARIABLE, items)
+        assert len(keys) == 4
+
+        docs = await client.kv.bulk_get(self.VARIABLE, keys)
+        assert len(docs) == 4
+
+        for k in keys:
+            await client.kv.delete(self.VARIABLE, k)
+
+    async def test_bulk_put_auto_keys(self, client: AsyncIyreeClient):
+        items = [{"data": {"auto": True}} for _ in range(3)]
+        keys = await client.kv.bulk_put(self.VARIABLE, items)
+        assert len(keys) == 3
+        assert all(len(k) > 0 for k in keys)
+
+        for k in keys:
+            await client.kv.delete(self.VARIABLE, k)
+
+    async def test_bulk_put_with_indexes_and_list(self, client: AsyncIyreeClient):
+        prefix = uuid.uuid4().hex[:8]
+        items = [
+            {"data": {"v": "x"}, "key": f"abpi-{prefix}-x", "indexes": {"level": "high"}},
+            {"data": {"v": "y"}, "key": f"abpi-{prefix}-y", "indexes": {"level": "low"}},
+        ]
+        keys = await client.kv.bulk_put(self.VARIABLE, items)
+
+        result = await client.kv.list(
+            self.VARIABLE,
+            where=[{"index_name": "level", "op": "eq", "value": "high"}],
+        )
+        found = {d.key for d in result.items}
+        assert f"abpi-{prefix}-x" in found
+        assert f"abpi-{prefix}-y" not in found
+
+        for k in keys:
+            await client.kv.delete(self.VARIABLE, k)

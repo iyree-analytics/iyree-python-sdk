@@ -1,0 +1,282 @@
+---
+title: "KV"
+description: "Key-Value document store"
+---
+
+The KV sub-client provides access to the IYREE Key-Value store. Store, retrieve, update, and delete JSON documents organized by variables (namespaces).
+
+```python
+from iyree import IyreeClient
+
+with IyreeClient(api_key="my-key") as client:
+    client.kv.put("config", {"theme": "dark"}, key="user_prefs")
+    doc = client.kv.get("config", "user_prefs")
+    print(doc.data)  # {"theme": "dark"}
+```
+
+---
+
+## Methods
+
+### `get`
+
+Retrieve a document by key.
+
+```python
+doc = client.kv.get("config", "user_prefs")
+print(doc.data)
+print(doc.created_at)
+```
+
+#### Parameters
+
+<ResponseField name="variable" type="str" required>
+  KV store variable (namespace).
+</ResponseField>
+
+<ResponseField name="key" type="str" required>
+  Document key.
+</ResponseField>
+
+#### Returns `KvDocument`
+
+<ResponseField name="key" type="str">
+  Document key.
+</ResponseField>
+
+<ResponseField name="data" type="Any">
+  Arbitrary document payload (typically a dict).
+</ResponseField>
+
+<ResponseField name="created_at" type="datetime">
+  Creation timestamp.
+</ResponseField>
+
+<ResponseField name="updated_at" type="datetime">
+  Last modification timestamp.
+</ResponseField>
+
+<ResponseField name="expires_at" type="datetime">
+  Expiry timestamp, or `None` if the document does not expire.
+</ResponseField>
+
+#### Errors
+
+| Exception | Condition |
+|-----------|-----------|
+| `IyreeNotFoundError` | Document does not exist |
+
+---
+
+### `put`
+
+Create or update a document. Returns the document key.
+
+```python
+key = client.kv.put("config", {"theme": "dark"}, key="user_prefs")
+print(key)  # "user_prefs"
+```
+
+#### Parameters
+
+<ResponseField name="variable" type="str" required>
+  KV store variable (namespace).
+</ResponseField>
+
+<ResponseField name="data" type="Any" required>
+  Document payload. Any JSON-serializable value.
+</ResponseField>
+
+<ResponseField name="key" type="str">
+  Document key. If `None`, the server auto-generates a key.
+</ResponseField>
+
+<ResponseField name="indexes" type="Dict[str, Any]">
+  Optional index fields for querying documents.
+
+  ```python
+  indexes={"user_id": 42, "region": "US"}
+  ```
+</ResponseField>
+
+<ResponseField name="ttl" type="int">
+  Time-to-live in seconds. The document expires after this duration.
+</ResponseField>
+
+<ResponseField name="upsert" type="bool" default="True">
+  If `True` (default), overwrite an existing document with the same key. If `False`, the request fails when the key already exists.
+</ResponseField>
+
+#### Returns `str`
+
+The document key (same as `key` if provided, or the auto-generated key).
+
+---
+
+### `delete`
+
+Delete a document by key.
+
+```python
+deleted = client.kv.delete("config", "user_prefs")
+print(deleted)  # True
+```
+
+#### Parameters
+
+<ResponseField name="variable" type="str" required>
+  KV store variable (namespace).
+</ResponseField>
+
+<ResponseField name="key" type="str" required>
+  Document key.
+</ResponseField>
+
+#### Returns `bool`
+
+Always `True` after a successful deletion.
+
+---
+
+### `exists`
+
+Check whether a document exists. Does **not** raise on 404 — returns `False` instead.
+
+```python
+if client.kv.exists("config", "user_prefs"):
+    doc = client.kv.get("config", "user_prefs")
+```
+
+#### Parameters
+
+<ResponseField name="variable" type="str" required>
+  KV store variable (namespace).
+</ResponseField>
+
+<ResponseField name="key" type="str" required>
+  Document key.
+</ResponseField>
+
+#### Returns `bool`
+
+`True` if the document exists, `False` otherwise.
+
+---
+
+### `patch`
+
+Partially update a document. Supports setting, unsetting, and incrementing fields.
+
+```python
+updated = client.kv.patch(
+    "config", "user_prefs",
+    set={"theme": "light", "language": "en"},
+    inc={"login_count": 1},
+)
+print(updated.data)
+```
+
+#### Parameters
+
+<ResponseField name="variable" type="str" required>
+  KV store variable (namespace).
+</ResponseField>
+
+<ResponseField name="key" type="str" required>
+  Document key.
+</ResponseField>
+
+<ResponseField name="set" type="Dict[str, Any]">
+  Fields to set or overwrite.
+
+  ```python
+  set={"theme": "light", "language": "en"}
+  ```
+</ResponseField>
+
+<ResponseField name="unset" type="List[str]">
+  Field names to remove from the document.
+
+  ```python
+  unset=["deprecated_field", "temp_flag"]
+  ```
+</ResponseField>
+
+<ResponseField name="inc" type="Dict[str, Any]">
+  Fields to increment by a numeric value.
+
+  ```python
+  inc={"view_count": 1, "score": 10}
+  ```
+</ResponseField>
+
+<ResponseField name="indexes" type="Dict[str, Any]">
+  Index fields to update.
+</ResponseField>
+
+#### Returns `KvDocument`
+
+The updated document.
+
+---
+
+## Examples
+
+<CodeGroup>
+
+```python CRUD operations
+from iyree import IyreeClient
+
+with IyreeClient(api_key="my-key") as client:
+    # Create
+    key = client.kv.put("users", {"name": "Alice", "role": "admin"}, key="alice")
+
+    # Read
+    doc = client.kv.get("users", "alice")
+    print(doc.data)  # {"name": "Alice", "role": "admin"}
+
+    # Update
+    updated = client.kv.patch("users", "alice", set={"role": "superadmin"})
+    print(updated.data["role"])  # "superadmin"
+
+    # Delete
+    client.kv.delete("users", "alice")
+```
+
+```python Auto-generated key with TTL
+key = client.kv.put(
+    "sessions",
+    {"user_id": 42, "token": "abc123"},
+    ttl=3600,  # expires in 1 hour
+)
+print(f"Session key: {key}")
+```
+
+```python Check existence before access
+if client.kv.exists("cache", "report_q1"):
+    doc = client.kv.get("cache", "report_q1")
+    print(doc.data)
+else:
+    print("Cache miss — regenerating report")
+```
+
+```python Atomic increment
+client.kv.put("counters", {"views": 0, "clicks": 0}, key="homepage")
+
+client.kv.patch("counters", "homepage", inc={"views": 1})
+client.kv.patch("counters", "homepage", inc={"clicks": 1, "views": 1})
+
+doc = client.kv.get("counters", "homepage")
+print(doc.data)  # {"views": 2, "clicks": 1}
+```
+
+```python Async
+from iyree import AsyncIyreeClient
+
+async with AsyncIyreeClient(api_key="my-key") as client:
+    key = await client.kv.put("cache", {"result": [1, 2, 3]}, key="data")
+    doc = await client.kv.get("cache", "data")
+    print(doc.data)
+```
+
+</CodeGroup>

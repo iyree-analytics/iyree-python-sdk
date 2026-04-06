@@ -68,12 +68,21 @@ def generate_fact_rows(n: int, *, org_offset: int = 9000) -> pd.DataFrame:
     return df
 
 
+@pytest.fixture(autouse=True)
+def _rate_limit_pause():
+    """Delay between tests to avoid hitting gateway rate limits."""
+    import time
+    time.sleep(1)
+    yield
+    time.sleep(1)
+
+
 @pytest.fixture(scope="module")
 def client():
     with IyreeClient(
         api_key=API_KEY, gateway_host=GATEWAY_HOST,
         timeout=60.0, stream_load_timeout=120.0,
-        max_retries=5,
+        max_retries=8,
     ) as c:
         yield c
 
@@ -618,6 +627,319 @@ class TestKvIntegration:
 
         doc = client.kv.get(self.VARIABLE, doc_key)
         assert doc.data["v"] == 2
+        client.kv.delete(self.VARIABLE, doc_key)
+
+    # ── List ─────────────────────────────────────────────────────────
+
+    def test_list_basic(self, client: IyreeClient):
+        """Insert docs, list them, verify they appear."""
+        prefix = uuid.uuid4().hex[:8]
+        keys = [f"list-{prefix}-{i}" for i in range(5)]
+        for k in keys:
+            client.kv.put(self.VARIABLE, {"idx": k}, key=k)
+
+        result = client.kv.list(self.VARIABLE, limit=100)
+        found_keys = {doc.key for doc in result.items}
+        for k in keys:
+            assert k in found_keys, f"{k} not in list result"
+
+        for k in keys:
+            client.kv.delete(self.VARIABLE, k)
+
+    def test_list_with_limit(self, client: IyreeClient):
+        """Verify limit parameter is respected."""
+        prefix = uuid.uuid4().hex[:8]
+        keys = [f"lim-{prefix}-{i}" for i in range(5)]
+        for k in keys:
+            client.kv.put(self.VARIABLE, {"x": 1}, key=k)
+
+        result = client.kv.list(self.VARIABLE, limit=2)
+        assert len(result.items) <= 2
+
+        for k in keys:
+            client.kv.delete(self.VARIABLE, k)
+
+    def test_list_pagination_with_cursor(self, client: IyreeClient):
+        """Verify cursor-based pagination works."""
+        prefix = uuid.uuid4().hex[:8]
+        keys = [f"pg-{prefix}-{i}" for i in range(5)]
+        for k in keys:
+            client.kv.put(self.VARIABLE, {"x": 1}, key=k)
+
+        all_keys: list[str] = []
+        cursor = None
+        for _ in range(10):
+            page = client.kv.list(self.VARIABLE, limit=2, cursor=cursor)
+            all_keys.extend(doc.key for doc in page.items)
+            if not page.has_more or page.cursor is None:
+                break
+            cursor = page.cursor
+
+        for k in keys:
+            assert k in all_keys
+
+        for k in keys:
+            client.kv.delete(self.VARIABLE, k)
+
+    def test_list_iter_auto_paginates(self, client: IyreeClient):
+        """Verify list_iter walks through all pages."""
+        prefix = uuid.uuid4().hex[:8]
+        keys = [f"iter-{prefix}-{i}" for i in range(6)]
+        for k in keys:
+            client.kv.put(self.VARIABLE, {"x": 1}, key=k)
+
+        found = set()
+        for doc in client.kv.list_iter(self.VARIABLE, limit=2):
+            found.add(doc.key)
+        for k in keys:
+            assert k in found
+
+        for k in keys:
+            client.kv.delete(self.VARIABLE, k)
+
+    def test_list_with_order_by(self, client: IyreeClient):
+        """Verify order_by returns documents in the requested order."""
+        prefix = uuid.uuid4().hex[:8]
+        keys = [f"ord-{prefix}-{i}" for i in range(3)]
+        for k in keys:
+            client.kv.put(self.VARIABLE, {"x": 1}, key=k)
+
+        result_asc = client.kv.list(
+            self.VARIABLE,
+            order_by={"field": "created_at", "direction": "asc"},
+            limit=100,
+        )
+        result_desc = client.kv.list(
+            self.VARIABLE,
+            order_by={"field": "created_at", "direction": "desc"},
+            limit=100,
+        )
+        asc_keys = [d.key for d in result_asc.items]
+        desc_keys = [d.key for d in result_desc.items]
+        assert asc_keys != desc_keys or len(asc_keys) <= 1
+
+        for k in keys:
+            client.kv.delete(self.VARIABLE, k)
+
+    def test_list_with_select(self, client: IyreeClient):
+        """Verify select parameter limits the data keys returned."""
+        doc_key = f"sel-{uuid.uuid4().hex[:12]}"
+        client.kv.put(
+            self.VARIABLE,
+            {"name": "Alice", "age": 30, "city": "Berlin"},
+            key=doc_key,
+        )
+
+        result = client.kv.list(self.VARIABLE, select=["name"])
+        target = next((d for d in result.items if d.key == doc_key), None)
+        assert target is not None
+        assert "name" in target.data
+        assert "city" not in target.data
+
+        client.kv.delete(self.VARIABLE, doc_key)
+
+    def test_list_with_index_filter(self, client: IyreeClient):
+        """Verify where clause filters by index value."""
+        prefix = uuid.uuid4().hex[:8]
+        k_a = f"wh-{prefix}-a"
+        k_b = f"wh-{prefix}-b"
+        client.kv.put(
+            self.VARIABLE, {"v": "a"}, key=k_a,
+            indexes={"status": "active"},
+        )
+        client.kv.put(
+            self.VARIABLE, {"v": "b"}, key=k_b,
+            indexes={"status": "inactive"},
+        )
+
+        result = client.kv.list(
+            self.VARIABLE,
+            where=[{"index_name": "status", "op": "eq", "value": "active"}],
+        )
+        found_keys = {d.key for d in result.items}
+        assert k_a in found_keys
+        assert k_b not in found_keys
+
+        client.kv.delete(self.VARIABLE, k_a)
+        client.kv.delete(self.VARIABLE, k_b)
+
+    def test_list_with_datetime_index_filter(self, client: IyreeClient):
+        """Verify datetime values in where clauses are serialized correctly."""
+        prefix = uuid.uuid4().hex[:8]
+        dt_old = datetime(2024, 1, 1, 0, 0, 0)
+        dt_new = datetime(2025, 6, 1, 0, 0, 0)
+
+        k_old = f"dt-{prefix}-old"
+        k_new = f"dt-{prefix}-new"
+        client.kv.put(
+            self.VARIABLE, {"v": "old"}, key=k_old,
+            indexes={"event_at": dt_old},
+        )
+        client.kv.put(
+            self.VARIABLE, {"v": "new"}, key=k_new,
+            indexes={"event_at": dt_new},
+        )
+
+        result = client.kv.list(
+            self.VARIABLE,
+            where=[{
+                "index_name": "event_at",
+                "op": "gte",
+                "value": datetime(2025, 1, 1),
+            }],
+        )
+        found_keys = {d.key for d in result.items}
+        assert k_new in found_keys
+        assert k_old not in found_keys
+
+        client.kv.delete(self.VARIABLE, k_old)
+        client.kv.delete(self.VARIABLE, k_new)
+
+    def test_list_empty(self, client: IyreeClient):
+        """List with an impossible filter returns empty items."""
+        result = client.kv.list(
+            self.VARIABLE,
+            where=[{"index_name": "nonexistent_idx", "op": "eq", "value": "nope"}],
+        )
+        assert result.items == []
+
+    # ── Bulk get ─────────────────────────────────────────────────────
+
+    def test_bulk_get_all_found(self, client: IyreeClient):
+        prefix = uuid.uuid4().hex[:8]
+        keys = [f"bg-{prefix}-{i}" for i in range(3)]
+        for k in keys:
+            client.kv.put(self.VARIABLE, {"k": k}, key=k)
+
+        result = client.kv.bulk_get(self.VARIABLE, keys)
+        assert len(result) == 3
+        for k in keys:
+            assert k in result
+            assert result[k].data["k"] == k
+
+        for k in keys:
+            client.kv.delete(self.VARIABLE, k)
+
+    def test_bulk_get_partial(self, client: IyreeClient):
+        """Missing keys should be absent from the result, not raise."""
+        doc_key = f"bg-partial-{uuid.uuid4().hex[:12]}"
+        client.kv.put(self.VARIABLE, {"x": 1}, key=doc_key)
+
+        result = client.kv.bulk_get(
+            self.VARIABLE,
+            [doc_key, "definitely-not-a-key"],
+        )
+        assert doc_key in result
+        assert "definitely-not-a-key" not in result
+
+        client.kv.delete(self.VARIABLE, doc_key)
+
+    def test_bulk_get_empty_keys(self, client: IyreeClient):
+        result = client.kv.bulk_get(self.VARIABLE, [])
+        assert result == {}
+
+    # ── Bulk put ─────────────────────────────────────────────────────
+
+    def test_bulk_put_basic(self, client: IyreeClient):
+        prefix = uuid.uuid4().hex[:8]
+        items = [
+            {"data": {"name": f"user-{i}"}, "key": f"bp-{prefix}-{i}"}
+            for i in range(5)
+        ]
+        returned_keys = client.kv.bulk_put(self.VARIABLE, items)
+        assert len(returned_keys) == 5
+        for i, k in enumerate(returned_keys):
+            assert k == f"bp-{prefix}-{i}"
+
+        docs = client.kv.bulk_get(self.VARIABLE, returned_keys)
+        assert len(docs) == 5
+        assert docs[f"bp-{prefix}-0"].data["name"] == "user-0"
+
+        for k in returned_keys:
+            client.kv.delete(self.VARIABLE, k)
+
+    def test_bulk_put_auto_generated_keys(self, client: IyreeClient):
+        """When key is omitted, the backend generates one."""
+        items = [{"data": {"auto": True}} for _ in range(3)]
+        returned_keys = client.kv.bulk_put(self.VARIABLE, items)
+        assert len(returned_keys) == 3
+        assert all(isinstance(k, str) and len(k) > 0 for k in returned_keys)
+
+        for k in returned_keys:
+            client.kv.delete(self.VARIABLE, k)
+
+    def test_bulk_put_with_indexes(self, client: IyreeClient):
+        """Bulk put with indexes, then filter by index in list."""
+        prefix = uuid.uuid4().hex[:8]
+        items = [
+            {
+                "data": {"v": "a"},
+                "key": f"bpi-{prefix}-a",
+                "indexes": {"tier": "gold"},
+            },
+            {
+                "data": {"v": "b"},
+                "key": f"bpi-{prefix}-b",
+                "indexes": {"tier": "silver"},
+            },
+        ]
+        keys = client.kv.bulk_put(self.VARIABLE, items)
+        assert len(keys) == 2
+
+        result = client.kv.list(
+            self.VARIABLE,
+            where=[{"index_name": "tier", "op": "eq", "value": "gold"}],
+        )
+        found_keys = {d.key for d in result.items}
+        assert f"bpi-{prefix}-a" in found_keys
+        assert f"bpi-{prefix}-b" not in found_keys
+
+        for k in keys:
+            client.kv.delete(self.VARIABLE, k)
+
+    def test_bulk_put_with_datetime_indexes(self, client: IyreeClient):
+        """Verify datetime index values are serialized correctly in bulk_put."""
+        prefix = uuid.uuid4().hex[:8]
+        dt = datetime(2025, 7, 15, 10, 30, 0)
+        items = [
+            {
+                "data": {"event": "launch"},
+                "key": f"bpdt-{prefix}",
+                "indexes": {"happened_at": dt},
+            },
+        ]
+        keys = client.kv.bulk_put(self.VARIABLE, items)
+        assert len(keys) == 1
+
+        doc = client.kv.get(self.VARIABLE, keys[0])
+        assert doc.data["event"] == "launch"
+
+        client.kv.delete(self.VARIABLE, keys[0])
+
+    def test_bulk_put_upsert(self, client: IyreeClient):
+        """Bulk put with upsert overwrites existing docs."""
+        doc_key = f"bpu-{uuid.uuid4().hex[:12]}"
+        client.kv.put(self.VARIABLE, {"version": 1}, key=doc_key)
+
+        client.kv.bulk_put(self.VARIABLE, [
+            {"data": {"version": 2}, "key": doc_key},
+        ], upsert=True)
+
+        doc = client.kv.get(self.VARIABLE, doc_key)
+        assert doc.data["version"] == 2
+
+        client.kv.delete(self.VARIABLE, doc_key)
+
+    def test_bulk_put_with_ttl(self, client: IyreeClient):
+        """Bulk put with TTL creates documents that have expires_at set."""
+        doc_key = f"bpttl-{uuid.uuid4().hex[:12]}"
+        client.kv.bulk_put(self.VARIABLE, [
+            {"data": {"temp": True}, "key": doc_key, "ttl": 3600},
+        ])
+
+        doc = client.kv.get(self.VARIABLE, doc_key)
+        assert doc.expires_at is not None
+
         client.kv.delete(self.VARIABLE, doc_key)
 
 

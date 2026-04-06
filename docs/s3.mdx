@@ -1,0 +1,379 @@
+---
+title: "S3"
+description: "Object storage — upload, download, list, copy, and delete"
+---
+
+The S3 sub-client provides access to the IYREE S3-compatible object storage. Management operations go through the gateway; data operations use presigned URLs to interact with S3 directly.
+
+```python
+from iyree import IyreeClient
+
+with IyreeClient(api_key="my-key") as client:
+    client.s3.upload_object("data/report.csv", b"id,value\n1,100")
+    data = client.s3.download_object("data/report.csv")
+```
+
+---
+
+## Methods
+
+### `list_objects`
+
+List objects under a prefix (single page). For auto-pagination, use [`list_objects_iter`](#list_objects_iter).
+
+```python
+page = client.s3.list_objects(prefix="data/", max_keys=100)
+for obj in page.objects:
+    print(obj.key, obj.size)
+```
+
+#### Parameters
+
+<ResponseField name="prefix" type="str" default='""'>
+  Key prefix filter. Only objects whose keys start with this prefix are returned.
+</ResponseField>
+
+<ResponseField name="max_keys" type="int" default="1000">
+  Maximum number of keys per page.
+</ResponseField>
+
+<ResponseField name="continuation_token" type="str">
+  Token from a previous page for pagination. Use `page.next_continuation_token`.
+</ResponseField>
+
+#### Returns `S3ListResult`
+
+<ResponseField name="objects" type="List[S3Object]">
+  Objects in this page.
+
+  <Expandable title="S3Object">
+    <ResponseField name="key" type="str">
+      Object key.
+    </ResponseField>
+    <ResponseField name="size" type="int">
+      Object size in bytes.
+    </ResponseField>
+    <ResponseField name="last_modified" type="datetime">
+      Last modification timestamp.
+    </ResponseField>
+    <ResponseField name="etag" type="str">
+      Entity tag (hash of the object content).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="next_continuation_token" type="str">
+  Token for fetching the next page, or `None` if this is the last page.
+</ResponseField>
+
+<ResponseField name="is_truncated" type="bool">
+  Whether more pages are available.
+</ResponseField>
+
+<ResponseField name="key_count" type="int">
+  Number of keys returned in this page.
+</ResponseField>
+
+---
+
+### `list_objects_iter`
+
+Auto-paginating iterator over all S3 objects matching a prefix. Handles pagination automatically.
+
+```python
+for obj in client.s3.list_objects_iter(prefix="data/"):
+    print(obj.key, obj.size)
+```
+
+#### Parameters
+
+<ResponseField name="prefix" type="str" default='""'>
+  Key prefix filter.
+</ResponseField>
+
+<ResponseField name="max_keys" type="int" default="1000">
+  Maximum number of keys per page (controls internal page size).
+</ResponseField>
+
+#### Yields `S3Object`
+
+Yields individual `S3Object` instances across all pages.
+
+---
+
+### `upload_object`
+
+Upload an object using a presigned PUT URL.
+
+```python
+client.s3.upload_object("reports/q1.csv", b"id,revenue\n1,5000")
+```
+
+#### Parameters
+
+<ResponseField name="key" type="str" required>
+  Destination object key (the "path" in the bucket).
+</ResponseField>
+
+<ResponseField name="data" type="bytes | str | BinaryIO" required>
+  Upload payload. Strings are UTF-8 encoded. File-like objects are read to bytes.
+</ResponseField>
+
+<ResponseField name="content_type" type="str" default='"application/octet-stream"'>
+  MIME type of the object.
+
+  ```python
+  client.s3.upload_object("page.html", html_bytes, content_type="text/html")
+  ```
+</ResponseField>
+
+#### Returns `None`
+
+#### Errors
+
+| Exception | Condition |
+|-----------|-----------|
+| `IyreeS3Error` | Upload failed (HTTP error from S3) |
+
+---
+
+### `download_object`
+
+Download an object and return its contents as bytes.
+
+```python
+data = client.s3.download_object("data/report.csv")
+print(data.decode("utf-8"))
+```
+
+#### Parameters
+
+<ResponseField name="key" type="str" required>
+  Object key to download.
+</ResponseField>
+
+#### Returns `bytes`
+
+The object contents.
+
+#### Errors
+
+| Exception | Condition |
+|-----------|-----------|
+| `IyreeS3Error` | Download failed (HTTP error from S3) |
+
+---
+
+### `download_object_to_file`
+
+Download an object and stream it directly to a local file. Memory-efficient for large files.
+
+```python
+client.s3.download_object_to_file("data/large.csv", "/tmp/large.csv")
+```
+
+#### Parameters
+
+<ResponseField name="key" type="str" required>
+  Object key to download.
+</ResponseField>
+
+<ResponseField name="path" type="str | Path" required>
+  Local file path to write to. Parent directories must exist.
+</ResponseField>
+
+#### Returns `None`
+
+#### Errors
+
+| Exception | Condition |
+|-----------|-----------|
+| `IyreeS3Error` | Download failed (HTTP error from S3) |
+
+---
+
+### `copy_object`
+
+Copy an object within the bucket.
+
+```python
+result = client.s3.copy_object("data/report.csv", "archive/report_backup.csv")
+print(result.destination_key)  # "archive/report_backup.csv"
+```
+
+#### Parameters
+
+<ResponseField name="source_key" type="str" required>
+  Key of the source object.
+</ResponseField>
+
+<ResponseField name="destination_key" type="str" required>
+  Key for the destination copy.
+</ResponseField>
+
+#### Returns `S3CopyResult`
+
+<ResponseField name="source_key" type="str">
+  The source object key.
+</ResponseField>
+
+<ResponseField name="destination_key" type="str">
+  The destination object key.
+</ResponseField>
+
+---
+
+### `delete_objects`
+
+Delete one or more objects in a single request. Partial failures are returned in the result — no exception is raised.
+
+```python
+result = client.s3.delete_objects(["tmp/file1.csv", "tmp/file2.csv"])
+print(f"Deleted: {result.deleted}")
+if result.errors:
+    for err in result.errors:
+        print(f"Failed: {err.key} — {err.message}")
+```
+
+#### Parameters
+
+<ResponseField name="keys" type="List[str]" required>
+  List of object keys to delete.
+</ResponseField>
+
+#### Returns `S3DeleteResult`
+
+<ResponseField name="deleted" type="List[str]">
+  Keys that were successfully deleted.
+</ResponseField>
+
+<ResponseField name="errors" type="List[S3DeleteError]">
+  Errors for objects that could not be deleted.
+
+  <Expandable title="S3DeleteError">
+    <ResponseField name="key" type="str">
+      Object key that failed.
+    </ResponseField>
+    <ResponseField name="code" type="str">
+      Error code from S3.
+    </ResponseField>
+    <ResponseField name="message" type="str">
+      Error description.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+---
+
+### `upload_dataframe`
+
+Upload a pandas DataFrame as CSV or Parquet. Requires `iyree[pandas]`.
+
+```python
+import pandas as pd
+
+df = pd.DataFrame({"id": [1, 2], "revenue": [5000, 8000]})
+client.s3.upload_dataframe("reports/q1.parquet", df, format="parquet")
+```
+
+#### Parameters
+
+<ResponseField name="key" type="str" required>
+  Destination object key.
+</ResponseField>
+
+<ResponseField name="df" type="pd.DataFrame" required>
+  The DataFrame to upload.
+</ResponseField>
+
+<ResponseField name="format" type="str" default='"csv"'>
+  Output format: `"csv"` or `"parquet"`.
+</ResponseField>
+
+#### Returns `None`
+
+#### Errors
+
+| Exception | Condition |
+|-----------|-----------|
+| `ImportError` | pandas is not installed |
+| `ValueError` | Unsupported format (not `csv` or `parquet`) |
+
+---
+
+## Examples
+
+<CodeGroup>
+
+```python Upload and download
+client.s3.upload_object("config/settings.json", '{"debug": true}', content_type="application/json")
+
+data = client.s3.download_object("config/settings.json")
+import json
+settings = json.loads(data)
+print(settings)  # {"debug": True}
+```
+
+```python List and iterate
+# Single page
+page = client.s3.list_objects(prefix="logs/", max_keys=50)
+print(f"Found {page.key_count} objects, truncated: {page.is_truncated}")
+
+# Auto-paginating iterator
+total_size = 0
+for obj in client.s3.list_objects_iter(prefix="logs/"):
+    total_size += obj.size
+print(f"Total size: {total_size} bytes")
+```
+
+```python Manual pagination
+token = None
+while True:
+    page = client.s3.list_objects(prefix="data/", continuation_token=token)
+    for obj in page.objects:
+        print(obj.key)
+    if not page.is_truncated:
+        break
+    token = page.next_continuation_token
+```
+
+```python Stream download to file
+client.s3.download_object_to_file(
+    "exports/large_dataset.parquet",
+    "/tmp/large_dataset.parquet",
+)
+```
+
+```python Copy and delete
+client.s3.copy_object("data/report.csv", "archive/2024/report.csv")
+client.s3.delete_objects(["data/report.csv"])
+```
+
+```python Upload DataFrame
+import pandas as pd
+
+df = pd.DataFrame({
+    "date": ["2024-01-01", "2024-01-02"],
+    "revenue": [1000, 1500],
+})
+
+# CSV
+client.s3.upload_dataframe("reports/daily.csv", df, format="csv")
+
+# Parquet
+client.s3.upload_dataframe("reports/daily.parquet", df, format="parquet")
+```
+
+```python Async
+from iyree import AsyncIyreeClient
+
+async with AsyncIyreeClient(api_key="my-key") as client:
+    await client.s3.upload_object("data/file.txt", b"hello")
+    data = await client.s3.download_object("data/file.txt")
+    print(data)  # b"hello"
+
+    async for obj in client.s3.list_objects_iter(prefix="data/"):
+        print(obj.key)
+```
+
+</CodeGroup>

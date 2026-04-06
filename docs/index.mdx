@@ -1,0 +1,141 @@
+---
+title: "IYREE Python SDK"
+description: "Python SDK for the IYREE BI analytics platform"
+---
+
+The IYREE Python SDK provides a convenient interface to the IYREE platform, including DWH (StarRocks), Cube.js analytics, S3 object storage, and a Key-Value store.
+
+## Installation
+
+```bash
+pip install iyree
+```
+
+To enable pandas integration (DataFrame support in DWH, Cube, and S3):
+
+```bash
+pip install iyree[pandas]
+```
+
+<Info>Requires Python 3.9 or later.</Info>
+
+## Initialization
+
+There are two ways to use the SDK: **module-level** (global client) or **explicit client** instances.
+
+### Module-level
+
+Call `iyree.init()` once, then access sub-clients directly on the `iyree` module.
+
+```python
+import iyree
+
+iyree.init(api_key="my-key", gateway_host="https://api.iyree.io")
+
+result = iyree.dwh.sql("SELECT 1")
+iyree.close()
+```
+
+### Explicit client (recommended)
+
+Create an `IyreeClient` instance. Use it as a context manager to ensure resources are released.
+
+```python
+from iyree import IyreeClient
+
+with IyreeClient(api_key="my-key", gateway_host="https://api.iyree.io") as client:
+    result = client.dwh.sql("SELECT * FROM orders LIMIT 10")
+    for row in result.to_dicts():
+        print(row)
+```
+
+### Async client
+
+For asyncio applications, use `AsyncIyreeClient`. All methods are `await`-able.
+
+```python
+from iyree import AsyncIyreeClient
+
+async with AsyncIyreeClient(api_key="my-key") as client:
+    result = await client.dwh.sql("SELECT 1 AS n")
+    print(result.to_dicts())
+```
+
+---
+
+## Configuration
+
+<ResponseField name="api_key" type="str" required>
+  API key for gateway authentication. Sent as the `x-api-key` header.
+</ResponseField>
+
+<ResponseField name="gateway_host" type="str">
+  Gateway base URL (e.g. `https://api.iyree.io`). Falls back to the `IYREE_GATEWAY_HOST` environment variable. If the value does not start with `http://` or `https://`, `https://` is prepended automatically.
+</ResponseField>
+
+<ResponseField name="timeout" type="float" default="30.0">
+  Default HTTP request timeout in seconds.
+</ResponseField>
+
+<ResponseField name="stream_load_timeout" type="float" default="300.0">
+  Timeout for DWH Stream Load (insert) operations in seconds.
+</ResponseField>
+
+<ResponseField name="cube_continue_wait_timeout" type="float" default="120.0">
+  Maximum duration in seconds for Cube "Continue wait" polling.
+</ResponseField>
+
+<ResponseField name="max_retries" type="int" default="3">
+  Maximum retry attempts for retryable errors (timeouts, transport errors, HTTP 429/502/503/504).
+</ResponseField>
+
+---
+
+## Sub-clients
+
+After initialization, access the four sub-clients as properties:
+
+| Property | Description |
+|----------|-------------|
+| `client.dwh` | [DWH](/dwh) — SQL queries and Stream Load inserts (StarRocks) |
+| `client.cube` | [Cube](/cube) — Cube.js analytics queries with a typed query builder |
+| `client.s3` | [S3](/s3) — Object storage (upload, download, list, copy, delete) |
+| `client.kv` | [KV](/kv) — Key-Value document store |
+
+---
+
+## Error handling
+
+All SDK exceptions inherit from `IyreeError`. Catch specific subclasses for fine-grained control.
+
+```python
+from iyree import IyreeClient, IyreeAuthError, IyreeNotFoundError
+
+try:
+    with IyreeClient(api_key="my-key") as client:
+        doc = client.kv.get("store", "missing-key")
+except IyreeAuthError:
+    print("Invalid API key")
+except IyreeNotFoundError:
+    print("Document not found")
+```
+
+### Exception hierarchy
+
+| Exception | Trigger |
+|-----------|---------|
+| `IyreeError` | Base exception for all SDK errors |
+| `IyreeConfigError` | Invalid or incomplete configuration |
+| `IyreeAuthError` | HTTP 401 — invalid or missing API key |
+| `IyreePermissionError` | HTTP 403 — insufficient permissions |
+| `IyreeNotFoundError` | HTTP 404 — resource not found |
+| `IyreeValidationError` | HTTP 422 — request failed server-side validation |
+| `IyreeRateLimitError` | HTTP 429 — rate limit exceeded (after retries) |
+| `IyreeServerError` | HTTP 5xx — server error (after retries) |
+| `IyreeTimeoutError` | Request timed out |
+| `IyreeStreamLoadError` | DWH Stream Load status is not `Success` |
+| `IyreeDuplicateLabelError` | Stream Load label already exists (extends `IyreeStreamLoadError`) |
+| `IyreeCubeTimeoutError` | Cube continue-wait polling exceeded timeout |
+| `IyreeS3Error` | S3 presigned-URL operation failed |
+
+Each exception exposes `.message`, `.status_code`, and `.response_body` attributes.

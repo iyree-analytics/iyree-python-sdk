@@ -53,6 +53,7 @@ from iyree._types import (
     CubeQueryResult,
     DwhQueryResult,
     KvDocument,
+    KvListResult,
     S3CopyResult,
     S3DeleteError,
     S3DeleteResult,
@@ -172,6 +173,7 @@ __all__ = [
     "S3DeleteResult",
     "S3DeleteError",
     "KvDocument",
+    "KvListResult",
     # Query builder
     "Cube",
     "Measure",

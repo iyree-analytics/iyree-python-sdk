@@ -1,0 +1,276 @@
+---
+title: "DWH"
+description: "SQL queries and Stream Load inserts into StarRocks"
+---
+
+The DWH sub-client provides access to the IYREE Data Warehouse powered by StarRocks. Execute SQL queries and bulk-insert data via Stream Load.
+
+```python
+from iyree import IyreeClient
+
+with IyreeClient(api_key="my-key") as client:
+    result = client.dwh.sql("SELECT * FROM orders LIMIT 10")
+```
+
+---
+
+## `sql`
+
+Execute a SQL query against StarRocks. Uses the [StarRocks SQL HTTP API](https://docs.starrocks.io/docs/sql-reference/http_sql_api) under the hood. The response is streamed as NDJSON and parsed incrementally.
+
+<Warning>Only `SELECT`, `SHOW`, `EXPLAIN`, and `KILL` statements are supported. DDL and DML statements (e.g. `CREATE`, `INSERT`, `UPDATE`, `DELETE`) are not allowed.</Warning>
+
+```python
+result = client.dwh.sql(
+    "SELECT status, COUNT(*) AS cnt FROM orders GROUP BY status",
+    session_variables={"query_timeout": 60},
+)
+```
+
+### Parameters
+
+<ResponseField name="query" type="str" required>
+  SQL query string to execute.
+</ResponseField>
+
+<ResponseField name="session_variables" type="Dict[str, Any]">
+  Optional StarRocks session variables applied for this query.
+
+  ```python
+  session_variables={"query_timeout": 60, "parallel_fragment_exec_instance_num": 4}
+  ```
+</ResponseField>
+
+### Returns `DwhQueryResult`
+
+<ResponseField name="columns" type="List[ColumnMeta]">
+  Column metadata from the query result.
+
+  <Expandable title="ColumnMeta">
+    <ResponseField name="name" type="str">
+      Column name.
+    </ResponseField>
+    <ResponseField name="type" type="str">
+      Column data type as reported by StarRocks.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="rows" type="List[List[Any]]">
+  Data rows. Each row is a list of values in column order.
+</ResponseField>
+
+<ResponseField name="statistics" type="Dict[str, Any]">
+  Query execution statistics from StarRocks.
+</ResponseField>
+
+<ResponseField name="connection_id" type="int">
+  Connection identifier from StarRocks.
+</ResponseField>
+
+### Result methods
+
+<ResponseField name="to_dicts()" type="() -> List[Dict[str, Any]]">
+  Convert rows to a list of `{column_name: value}` dictionaries.
+
+  ```python
+  result = client.dwh.sql("SELECT id, name FROM users")
+  for row in result.to_dicts():
+      print(row)  # {"id": 1, "name": "Alice"}
+  ```
+</ResponseField>
+
+<ResponseField name="to_dataframe()" type="() -> pd.DataFrame">
+  Convert to a pandas DataFrame. Requires `iyree[pandas]`.
+
+  ```python
+  df = client.dwh.sql("SELECT * FROM orders").to_dataframe()
+  print(df.head())
+  ```
+</ResponseField>
+
+### Errors
+
+| Exception | Condition |
+|-----------|-----------|
+| `IyreeError` | Query failure or HTTP error |
+| `IyreeAuthError` | Invalid API key |
+| `IyreeTimeoutError` | Request timed out |
+
+### Examples
+
+<CodeGroup>
+
+```python Basic query
+result = client.dwh.sql("SELECT 1 AS n")
+print(result.rows)       # [[1]]
+print(result.to_dicts()) # [{"n": 1}]
+```
+
+```python With session variables
+result = client.dwh.sql(
+    "SELECT * FROM large_table",
+    session_variables={"query_timeout": 120},
+)
+df = result.to_dataframe()
+```
+
+```python Async
+async with AsyncIyreeClient(api_key="my-key") as client:
+    result = await client.dwh.sql("SELECT COUNT(*) FROM orders")
+    print(result.to_dicts())
+```
+
+</CodeGroup>
+
+---
+
+## `insert`
+
+Insert data into a StarRocks table via Stream Load. Supports CSV strings, raw bytes, JSON lists, and pandas DataFrames.
+
+```python
+result = client.dwh.insert("staging_table", "col1,col2\n1,hello\n2,world")
+print(f"Loaded {result.number_loaded_rows} rows")
+```
+
+### Parameters
+
+<ResponseField name="table" type="str" required>
+  Target table name in StarRocks.
+</ResponseField>
+
+<ResponseField name="data" type="str | bytes | List[dict] | pd.DataFrame" required>
+  Payload to insert. The SDK auto-detects the type and adjusts the format accordingly:
+  - `str` — encoded as UTF-8, sent as-is
+  - `bytes` — sent as-is
+  - `List[dict]` — serialized to JSON, format switched to `json`, `strip_outer_array` enabled
+  - `pd.DataFrame` — exported to CSV (headerless), column names extracted automatically
+</ResponseField>
+
+<ResponseField name="format" type="str" default='"csv"'>
+  Data format: `"csv"` or `"json"`. Automatically overridden to `"json"` when `data` is a `list`.
+</ResponseField>
+
+<ResponseField name="label" type="str">
+  Idempotency label. When provided, re-sending the same label is safe — StarRocks deduplicates.
+</ResponseField>
+
+<ResponseField name="columns" type="List[str]">
+  Column mapping for CSV data. Automatically populated from DataFrame column names when inserting a DataFrame.
+</ResponseField>
+
+<ResponseField name="column_separator" type="str" default='","'>
+  Column separator for CSV format.
+</ResponseField>
+
+<ResponseField name="timeout" type="float">
+  Request timeout override in seconds. Defaults to `stream_load_timeout` from configuration.
+</ResponseField>
+
+<ResponseField name="**stream_load_headers" type="str">
+  Extra StarRocks Stream Load headers passed as keyword arguments (e.g. `max_filter_ratio="0.1"`).
+</ResponseField>
+
+### Returns `StreamLoadResult`
+
+<ResponseField name="txn_id" type="int">
+  StarRocks transaction ID.
+</ResponseField>
+
+<ResponseField name="label" type="str">
+  Label used for the load operation.
+</ResponseField>
+
+<ResponseField name="status" type="str">
+  Operation status: `Success`, `Fail`, `Publish Timeout`, `Label Already Exists`, etc.
+</ResponseField>
+
+<ResponseField name="message" type="str">
+  Human-readable status message.
+</ResponseField>
+
+<ResponseField name="number_total_rows" type="int">
+  Total rows processed.
+</ResponseField>
+
+<ResponseField name="number_loaded_rows" type="int">
+  Rows successfully loaded.
+</ResponseField>
+
+<ResponseField name="number_filtered_rows" type="int">
+  Rows filtered out.
+</ResponseField>
+
+<ResponseField name="number_unselected_rows" type="int">
+  Rows not selected.
+</ResponseField>
+
+<ResponseField name="load_bytes" type="int">
+  Bytes loaded.
+</ResponseField>
+
+<ResponseField name="load_time_ms" type="int">
+  Load duration in milliseconds.
+</ResponseField>
+
+<ResponseField name="error_url" type="str">
+  URL to fetch detailed error info when rows are filtered. `None` if no errors.
+</ResponseField>
+
+### Errors
+
+| Exception | Condition |
+|-----------|-----------|
+| `IyreeStreamLoadError` | Stream Load status is `Fail` |
+| `IyreeDuplicateLabelError` | Label already exists (extends `IyreeStreamLoadError`) |
+| `IyreeTimeoutError` | Upload timed out |
+
+### Examples
+
+<CodeGroup>
+
+```python CSV string
+result = client.dwh.insert(
+    "users",
+    "1,Alice\n2,Bob",
+    columns=["id", "name"],
+    label="load_users_001",
+)
+print(f"Loaded {result.number_loaded_rows} rows in {result.load_time_ms}ms")
+```
+
+```python JSON list
+result = client.dwh.insert(
+    "events",
+    [
+        {"event_type": "click", "user_id": 1},
+        {"event_type": "view", "user_id": 2},
+    ],
+)
+```
+
+```python pandas DataFrame
+import pandas as pd
+
+df = pd.DataFrame({"id": [1, 2, 3], "name": ["Alice", "Bob", "Charlie"]})
+result = client.dwh.insert("users", df, label="load_20240101")
+print(f"Loaded {result.number_loaded_rows} rows")
+```
+
+```python Custom separator and headers
+result = client.dwh.insert(
+    "products",
+    "1\tWidget\t9.99\n2\tGadget\t19.99",
+    column_separator="\t",
+    columns=["id", "name", "price"],
+    max_filter_ratio="0.1",
+)
+```
+
+```python Async
+async with AsyncIyreeClient(api_key="my-key") as client:
+    result = await client.dwh.insert("logs", log_data, label="logs_batch_42")
+```
+
+</CodeGroup>

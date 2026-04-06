@@ -214,3 +214,18 @@ class KvDocument:
     created_at: datetime
     updated_at: datetime
     expires_at: Optional[datetime] = None
+
+
+@dataclass
+class KvListResult:
+    """Cursor-paginated page of KV documents.
+
+    Attributes:
+        items: Documents in this page.
+        cursor: Opaque cursor for the next page, or ``None`` if this is the last.
+        has_more: Whether more pages are available.
+    """
+
+    items: List[KvDocument]
+    cursor: Optional[str]
+    has_more: bool

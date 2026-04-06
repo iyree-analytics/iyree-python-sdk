@@ -1,0 +1,471 @@
+---
+title: "Cube"
+description: "Cube.js analytics queries with a typed query builder"
+---
+
+The Cube sub-client provides access to the IYREE Cube.js API. Build type-safe analytics queries with the query builder or pass raw dicts.
+
+```python
+from iyree import IyreeClient
+
+with IyreeClient(api_key="my-key") as client:
+    result = client.cube.load({"measures": ["orders.count"]})
+    print(result.data)
+```
+
+---
+
+## Methods
+
+### `load`
+
+Execute a Cube.js query. Handles JWT token refresh and "Continue wait" polling automatically.
+
+```python
+result = client.cube.load(query)
+```
+
+#### Parameters
+
+<ResponseField name="query" type="Dict[str, Any] | Query" required>
+  A `Query` object (see [Query builder](#query-builder) below) or a raw Cube.js query dict.
+
+  ```python
+  # Raw dict
+  client.cube.load({"measures": ["orders.count"]})
+
+  # Query builder
+  client.cube.load(query_object)
+  ```
+</ResponseField>
+
+<ResponseField name="timeout" type="float">
+  Override for the continue-wait polling timeout in seconds. Defaults to `cube_continue_wait_timeout` from configuration.
+</ResponseField>
+
+#### Returns `CubeQueryResult`
+
+<ResponseField name="data" type="List[Dict[str, Any]]">
+  Result rows as a list of dictionaries.
+</ResponseField>
+
+<ResponseField name="annotation" type="Dict[str, Any]">
+  Column annotation metadata from Cube.js (titles, types, formats).
+</ResponseField>
+
+<ResponseField name="query" type="Dict[str, Any]">
+  The original query echoed back by Cube.js.
+</ResponseField>
+
+<ResponseField name="raw_response" type="Dict[str, Any]">
+  The full JSON response for advanced use cases.
+</ResponseField>
+
+#### Result methods
+
+<ResponseField name="to_dataframe()" type="() -> pd.DataFrame">
+  Convert to a pandas DataFrame. Requires `iyree[pandas]`.
+
+  ```python
+  df = client.cube.load(query).to_dataframe()
+  ```
+</ResponseField>
+
+#### Errors
+
+| Exception | Condition |
+|-----------|-----------|
+| `IyreeCubeTimeoutError` | Continue-wait polling exceeded the configured timeout |
+| `IyreeAuthError` | Invalid or expired token (retried once automatically) |
+
+---
+
+### `meta`
+
+Fetch Cube.js metadata — available cubes, measures, dimensions, and segments.
+
+```python
+metadata = client.cube.meta()
+for cube in metadata["cubes"]:
+    print(cube["name"])
+```
+
+#### Parameters
+
+<ResponseField name="timeout" type="float">
+  Per-request timeout override in seconds.
+</ResponseField>
+
+#### Returns `Dict[str, Any]`
+
+The raw metadata dict from Cube.js containing cubes, measures, dimensions, and segments.
+
+---
+
+## Query builder
+
+The SDK provides a typed query builder for constructing Cube.js queries. All classes are importable from the top-level `iyree` package.
+
+```python
+from iyree import Cube, Query, TimeDimension, DateRange, TimeGranularity, Filter, FilterOperator, Order
+```
+
+### `Cube`
+
+Factory for creating measure, dimension, and segment references scoped to a cube name.
+
+```python
+orders = Cube("orders")
+```
+
+<ResponseField name="name" type="str" required>
+  The cube name as defined in the Cube.js schema.
+</ResponseField>
+
+#### Methods
+
+<ResponseField name="measure(name)" type="(str) -> Measure">
+  Create a `Measure` reference. Serializes to `"cube_name.measure_name"`.
+
+  ```python
+  orders.measure("count")        # => "orders.count"
+  orders.measure("total_amount") # => "orders.total_amount"
+  ```
+</ResponseField>
+
+<ResponseField name="dimension(name)" type="(str) -> Dimension">
+  Create a `Dimension` reference. Serializes to `"cube_name.dimension_name"`.
+
+  ```python
+  orders.dimension("status")     # => "orders.status"
+  orders.dimension("created_at") # => "orders.created_at"
+  ```
+</ResponseField>
+
+<ResponseField name="segment(name)" type="(str) -> Segment">
+  Create a `Segment` reference. Serializes to `"cube_name.segment_name"`.
+
+  ```python
+  orders.segment("completed") # => "orders.completed"
+  ```
+</ResponseField>
+
+---
+
+### `Query`
+
+Typed builder for Cube.js queries. Pass it to `client.cube.load()`.
+
+```python
+query = Query(
+    measures=[orders.measure("count")],
+    dimensions=[orders.dimension("status")],
+    limit=100,
+)
+```
+
+#### Parameters
+
+<ResponseField name="measures" type="List[Measure]" required>
+  Measures to compute.
+</ResponseField>
+
+<ResponseField name="time_dimensions" type="List[TimeDimension]">
+  Time dimensions for filtering and grouping by time.
+</ResponseField>
+
+<ResponseField name="dimensions" type="List[Dimension]">
+  Dimensions for grouping results.
+</ResponseField>
+
+<ResponseField name="filters" type="List[Filter]">
+  Data filters to apply.
+</ResponseField>
+
+<ResponseField name="segments" type="List[Segment]">
+  Segments to apply.
+</ResponseField>
+
+<ResponseField name="limit" type="int" default="5000">
+  Maximum number of result rows.
+</ResponseField>
+
+<ResponseField name="offset" type="int" default="0">
+  Row offset for pagination.
+</ResponseField>
+
+<ResponseField name="order" type="List[Tuple[Dimension | Measure, Order]]">
+  Ordering of result rows. Each element is a tuple of `(member, direction)`.
+
+  ```python
+  order=[(orders.measure("count"), Order.desc)]
+  ```
+</ResponseField>
+
+<ResponseField name="timezone" type="str" default='"UTC"'>
+  IANA timezone name applied to time dimensions (e.g. `"America/New_York"`).
+</ResponseField>
+
+<ResponseField name="ungrouped" type="bool" default="False">
+  If `True`, skip `GROUP BY` in the generated SQL — returns raw rows.
+</ResponseField>
+
+---
+
+### `TimeDimension`
+
+Combination of a time dimension reference, date range, and granularity.
+
+```python
+td = TimeDimension(
+    orders.dimension("created_at"),
+    date_range=DateRange(relative="last 30 days"),
+    granularity=TimeGranularity.month,
+)
+```
+
+<ResponseField name="dimension" type="Dimension" required>
+  Reference to a time-type dimension.
+</ResponseField>
+
+<ResponseField name="date_range" type="DateRange">
+  Single date range for filtering. Provide either `date_range` or `compare_date_range`.
+</ResponseField>
+
+<ResponseField name="compare_date_range" type="List[DateRange]">
+  List of date ranges for period-over-period comparison.
+
+  ```python
+  compare_date_range=[
+      DateRange(relative="this month"),
+      DateRange(relative="last month"),
+  ]
+  ```
+</ResponseField>
+
+<ResponseField name="granularity" type="TimeGranularity" default="TimeGranularity.null">
+  Grouping granularity. When `null`, no time grouping is applied (filter only).
+</ResponseField>
+
+---
+
+### `DateRange`
+
+Absolute or relative date range for time-dimension filtering. Provide *either* `(start_date, end_date)` or `relative`.
+
+<ResponseField name="start_date" type="str">
+  Start of the absolute range (`YYYY-MM-DD` or ISO-8601).
+</ResponseField>
+
+<ResponseField name="end_date" type="str">
+  End of the absolute range.
+</ResponseField>
+
+<ResponseField name="relative" type="str">
+  Relative date expression understood by Cube.js.
+
+  ```python
+  DateRange(relative="last 7 days")
+  DateRange(relative="this quarter")
+  DateRange(relative="from 6 months ago to now")
+  ```
+</ResponseField>
+
+<CodeGroup>
+
+```python Absolute range
+DateRange(start_date="2024-01-01", end_date="2024-03-31")
+```
+
+```python Relative range
+DateRange(relative="last 30 days")
+```
+
+</CodeGroup>
+
+---
+
+### `Filter`
+
+A data filter applied to a measure or dimension.
+
+```python
+f = Filter(
+    orders.dimension("status"),
+    FilterOperator.equals,
+    values=["completed", "shipped"],
+)
+```
+
+<ResponseField name="member" type="Dimension | Measure" required>
+  The dimension or measure to filter on.
+</ResponseField>
+
+<ResponseField name="operator" type="FilterOperator" required>
+  The filter operator (see [FilterOperator](#filteroperator)).
+</ResponseField>
+
+<ResponseField name="values" type="List[Any]">
+  Filter values. Values are stringified during serialization. Not required for operators like `is_set` and `not_set`.
+</ResponseField>
+
+---
+
+### `And` / `Or`
+
+Boolean filter expressions for combining multiple filters.
+
+```python
+from iyree import And, Or, Filter, FilterOperator
+
+combined = Or(
+    Filter(orders.dimension("status"), FilterOperator.equals, ["completed"]),
+    And(
+        Filter(orders.dimension("region"), FilterOperator.equals, ["US"]),
+        Filter(orders.measure("total_amount"), FilterOperator.gt, [1000]),
+    ),
+)
+```
+
+<ResponseField name="*operands" type="Filter | BooleanExpression" required>
+  Any number of `Filter`, `And`, or `Or` instances.
+</ResponseField>
+
+---
+
+### Enums
+
+#### `TimeGranularity`
+
+| Value | Description |
+|-------|-------------|
+| `TimeGranularity.second` | Group by second |
+| `TimeGranularity.minute` | Group by minute |
+| `TimeGranularity.hour` | Group by hour |
+| `TimeGranularity.day` | Group by day |
+| `TimeGranularity.week` | Group by week |
+| `TimeGranularity.month` | Group by month |
+| `TimeGranularity.year` | Group by year |
+| `TimeGranularity.null` | No grouping (default) |
+
+#### `Order`
+
+| Value | Description |
+|-------|-------------|
+| `Order.asc` | Ascending |
+| `Order.desc` | Descending |
+
+#### `FilterOperator`
+
+| Value | Serialized | Description |
+|-------|------------|-------------|
+| `FilterOperator.equals` | `equals` | Equal to |
+| `FilterOperator.not_equals` | `notEquals` | Not equal to |
+| `FilterOperator.contains` | `contains` | Contains substring |
+| `FilterOperator.not_contains` | `notContains` | Does not contain |
+| `FilterOperator.gt` | `gt` | Greater than |
+| `FilterOperator.gte` | `gte` | Greater than or equal |
+| `FilterOperator.lt` | `lt` | Less than |
+| `FilterOperator.lte` | `lte` | Less than or equal |
+| `FilterOperator.is_set` | `set` | Value is set (not null) |
+| `FilterOperator.not_set` | `notSet` | Value is not set (null) |
+| `FilterOperator.in_date_range` | `inDateRange` | Within date range |
+| `FilterOperator.not_in_date_range` | `notInDateRange` | Outside date range |
+| `FilterOperator.before_date` | `beforeDate` | Before date |
+| `FilterOperator.after_date` | `afterDate` | After date |
+
+---
+
+## Examples
+
+<CodeGroup>
+
+```python Query builder
+from iyree import (
+    IyreeClient, Cube, Query, TimeDimension, DateRange,
+    TimeGranularity, Filter, FilterOperator, Order,
+)
+
+orders = Cube("orders")
+
+query = Query(
+    measures=[orders.measure("count"), orders.measure("total_amount")],
+    dimensions=[orders.dimension("status")],
+    time_dimensions=[
+        TimeDimension(
+            orders.dimension("created_at"),
+            date_range=DateRange(relative="last 30 days"),
+            granularity=TimeGranularity.day,
+        ),
+    ],
+    filters=[
+        Filter(orders.dimension("status"), FilterOperator.not_equals, ["cancelled"]),
+    ],
+    order=[(orders.measure("total_amount"), Order.desc)],
+    limit=1000,
+    timezone="Europe/Moscow",
+)
+
+with IyreeClient(api_key="my-key") as client:
+    result = client.cube.load(query)
+    df = result.to_dataframe()
+    print(df.head())
+```
+
+```python Raw dict
+with IyreeClient(api_key="my-key") as client:
+    result = client.cube.load({
+        "measures": ["orders.count"],
+        "dimensions": ["orders.status"],
+        "timeDimensions": [{
+            "dimension": "orders.created_at",
+            "granularity": "day",
+            "dateRange": "last 7 days",
+        }],
+    })
+    for row in result.data:
+        print(row)
+```
+
+```python Period comparison
+from iyree import Cube, Query, TimeDimension, DateRange, TimeGranularity
+
+orders = Cube("orders")
+
+query = Query(
+    measures=[orders.measure("count")],
+    time_dimensions=[
+        TimeDimension(
+            orders.dimension("created_at"),
+            compare_date_range=[
+                DateRange(relative="this month"),
+                DateRange(relative="last month"),
+            ],
+            granularity=TimeGranularity.day,
+        ),
+    ],
+)
+
+result = client.cube.load(query)
+```
+
+```python Fetch metadata
+metadata = client.cube.meta()
+for cube in metadata["cubes"]:
+    print(f"Cube: {cube['name']}")
+    for measure in cube.get("measures", []):
+        print(f"  Measure: {measure['name']}")
+```
+
+```python Async
+from iyree import AsyncIyreeClient, Cube, Query
+
+orders = Cube("orders")
+query = Query(measures=[orders.measure("count")])
+
+async with AsyncIyreeClient(api_key="my-key") as client:
+    result = await client.cube.load(query)
+    print(result.data)
+```
+
+</CodeGroup>
