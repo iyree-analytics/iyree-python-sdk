@@ -8,8 +8,10 @@ import pytest
 
 from iyree._types import StreamLoadResult
 from iyree.dwh._common import (
+    build_raw_sql_request_body,
     build_sql_request_body,
     parse_ndjson_lines,
+    parse_raw_sql_ndjson_lines,
     parse_stream_load_response,
     prepare_insert_data,
     prepare_stream_load_headers,
@@ -167,3 +169,77 @@ class TestValidateStreamLoadStatus:
         )
         with pytest.raises(IyreeDuplicateLabelError):
             validate_stream_load_status(result)
+
+
+# ---------------------------------------------------------------------------
+# Raw SQL (streaming /rawSql endpoint)
+# ---------------------------------------------------------------------------
+
+class TestBuildRawSqlRequestBody:
+    def test_builds_body(self):
+        body = build_raw_sql_request_body("SELECT 1")
+        assert body == {"query": "SELECT 1"}
+
+
+class TestParseRawSqlNdjsonLines:
+    def test_select_response(self):
+        lines = [
+            '{"meta":{"columns":["id","name","balance"]}}',
+            '{"id":1,"name":"Alice","balance":99.5}',
+            '{"id":2,"name":"Bob","balance":120.0}',
+            '{"stats":{"row_count":2}}',
+        ]
+        result = parse_raw_sql_ndjson_lines(lines)
+        assert result.columns == ["id", "name", "balance"]
+        assert len(result.rows) == 2
+        assert result.rows[0] == {"id": 1, "name": "Alice", "balance": 99.5}
+        assert result.rows[1]["name"] == "Bob"
+        assert result.row_count == 2
+        assert result.affected_rows == 0
+
+    def test_dml_response(self):
+        lines = ['{"stats":{"affected_rows":42}}']
+        result = parse_raw_sql_ndjson_lines(lines)
+        assert result.columns == []
+        assert result.rows == []
+        assert result.affected_rows == 42
+        assert result.row_count == 0
+
+    def test_empty_select(self):
+        lines = [
+            '{"meta":{"columns":["id","name"]}}',
+            '{"stats":{"row_count":0}}',
+        ]
+        result = parse_raw_sql_ndjson_lines(lines)
+        assert result.columns == ["id", "name"]
+        assert result.rows == []
+        assert result.row_count == 0
+
+    def test_empty_lines_skipped(self):
+        lines = [
+            '',
+            '{"meta":{"columns":["x"]}}',
+            '',
+            '{"x":1}',
+            '',
+            '{"stats":{"row_count":1}}',
+        ]
+        result = parse_raw_sql_ndjson_lines(lines)
+        assert len(result.rows) == 1
+
+    def test_mid_stream_error_raises(self):
+        lines = [
+            '{"meta":{"columns":["id"]}}',
+            '{"error":"query timeout exceeded"}',
+        ]
+        with pytest.raises(IyreeError, match="query timeout exceeded"):
+            parse_raw_sql_ndjson_lines(lines)
+
+    def test_to_dicts(self):
+        lines = [
+            '{"meta":{"columns":["a","b"]}}',
+            '{"a":1,"b":"x"}',
+            '{"stats":{"row_count":1}}',
+        ]
+        result = parse_raw_sql_ndjson_lines(lines)
+        assert result.to_dicts() == [{"a": 1, "b": "x"}]

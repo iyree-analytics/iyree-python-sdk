@@ -11,7 +11,7 @@ import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from iyree._types import ColumnMeta, DwhQueryResult, StreamLoadResult
+from iyree._types import ColumnMeta, DwhQueryResult, DwhRawSqlResult, StreamLoadResult
 from iyree.exceptions import IyreeDuplicateLabelError, IyreeError, IyreeStreamLoadError
 
 logger = logging.getLogger("iyree")
@@ -83,6 +83,72 @@ def parse_ndjson_lines(lines: List[str]) -> DwhQueryResult:
         rows=rows,
         statistics=statistics,
         connection_id=connection_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Raw SQL helpers (streaming /rawSql endpoint)
+# ---------------------------------------------------------------------------
+
+def build_raw_sql_request_body(query: str) -> Dict[str, Any]:
+    """Build the JSON body for ``POST /api/v1/dwh/rawSql``."""
+    return {"query": query}
+
+
+def parse_raw_sql_ndjson_lines(lines: List[str]) -> DwhRawSqlResult:
+    """Parse streaming NDJSON lines from the ``/rawSql`` endpoint.
+
+    **SELECT / SHOW / DESCRIBE** response lines:
+    - ``{"meta": {"columns": ["col1", "col2", ...]}}``
+    - ``{"col1": value, "col2": value, ...}``  (one per row)
+    - ``{"stats": {"row_count": N}}``
+
+    **DML / DDL** response (single line):
+    - ``{"stats": {"affected_rows": N}}``
+
+    **Mid-stream error:**
+    - ``{"error": "message"}``
+
+    Raises:
+        IyreeError: On a mid-stream error from StarRocks.
+    """
+    columns: List[str] = []
+    rows: List[Dict[str, Any]] = []
+    row_count = 0
+    affected_rows = 0
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        obj = json.loads(line)
+
+        if "error" in obj:
+            raise IyreeError(
+                f"DWH raw SQL error: {obj['error']}",
+                status_code=None,
+                response_body=obj,
+            )
+
+        if "meta" in obj:
+            columns = obj["meta"].get("columns", [])
+        elif "stats" in obj:
+            stats = obj["stats"]
+            row_count = stats.get("row_count", 0)
+            affected_rows = stats.get("affected_rows", 0)
+        else:
+            rows.append(obj)
+
+    _UINT64_MAX = 18446744073709551615
+    if row_count == _UINT64_MAX:
+        row_count = len(rows)
+
+    return DwhRawSqlResult(
+        columns=columns,
+        rows=rows,
+        row_count=row_count,
+        affected_rows=affected_rows,
     )
 
 

@@ -58,6 +58,45 @@ class DwhQueryResult:
 
 
 @dataclass
+class DwhRawSqlResult:
+    """Result of a raw SQL query via the streaming ``/rawSql`` endpoint.
+
+    Works for both SELECT queries (rows + columns) and DML/DDL statements
+    (affected_rows only).
+
+    Attributes:
+        columns: Column names from the ``meta`` line. Empty for DML/DDL.
+        rows: Data rows as dicts (``{column: value}``). Empty for DML/DDL.
+        row_count: Number of rows returned (SELECT) or 0.
+        affected_rows: Number of rows affected (DML/DDL) or 0.
+    """
+
+    columns: List[str]
+    rows: List[Dict[str, Any]]
+    row_count: int = 0
+    affected_rows: int = 0
+
+    def to_dicts(self) -> List[Dict[str, Any]]:
+        """Return rows as a list of ``{column_name: value}`` dicts (identity)."""
+        return self.rows
+
+    def to_dataframe(self) -> "pd.DataFrame":
+        """Convert to a pandas ``DataFrame``.
+
+        Raises:
+            ImportError: If pandas is not installed.
+        """
+        try:
+            import pandas as pd
+        except ImportError:
+            raise ImportError(
+                "pandas is required for to_dataframe(). "
+                "Install it with: pip install iyree[pandas]"
+            ) from None
+        return pd.DataFrame(self.rows, columns=self.columns or None)
+
+
+@dataclass
 class StreamLoadResult:
     """Result of a DWH Stream Load (insert) operation.
 

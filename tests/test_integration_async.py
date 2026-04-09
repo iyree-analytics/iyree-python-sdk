@@ -19,6 +19,7 @@ from test_integration_sync import (
     GATEWAY_HOST,
     API_KEY,
     TABLE,
+    SUMMARY_TABLE,
     COLUMNS,
     HAS_PYARROW,
     generate_fact_rows,
@@ -128,6 +129,73 @@ class TestAsyncDwhSqlIntegration:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# DWH — Raw SQL (streaming /rawSql endpoint)
+# ══════════════════════════════════════════════════════════════════════
+
+class TestAsyncDwhRawSqlIntegration:
+    async def test_select_query(self, client: AsyncIyreeClient):
+        result = await client.dwh.raw_sql(
+            f"SELECT organization_id, balance FROM {TABLE} LIMIT 5"
+        )
+        assert "organization_id" in result.columns
+        assert len(result.rows) <= 5
+        for row in result.rows:
+            assert "organization_id" in row
+
+    async def test_select_one(self, client: AsyncIyreeClient):
+        result = await client.dwh.raw_sql("SELECT 1 AS n")
+        assert result.rows[0]["n"] == 1
+        assert result.row_count == 1
+
+    async def test_aggregation(self, client: AsyncIyreeClient):
+        result = await client.dwh.raw_sql(
+            f"SELECT organization_id, COUNT(*) AS cnt "
+            f"FROM {TABLE} GROUP BY organization_id "
+            f"ORDER BY cnt DESC LIMIT 5"
+        )
+        assert "cnt" in result.columns
+        for row in result.rows:
+            assert row["cnt"] > 0
+
+    async def test_insert_values(self, client: AsyncIyreeClient):
+        result = await client.dwh.raw_sql(
+            f"INSERT INTO {TABLE} "
+            f"(organization_id, terminal_group_id, product_id, "
+            f" product_size_id, date_add, loaded_at, balance) "
+            f"VALUES "
+            f"('async-raw-org-1', 'tg-200', 'p-300', 's-3', "
+            f" '2025-06-10 00:00:00', '2025-06-10', 55.55)"
+        )
+        assert result.affected_rows == 1
+
+    async def test_insert_as_select_into_summary(self, client: AsyncIyreeClient):
+        result = await client.dwh.raw_sql(
+            f"INSERT INTO {SUMMARY_TABLE} (organization_id, balance) "
+            f"SELECT organization_id, SUM(balance) AS balance "
+            f"FROM {TABLE} GROUP BY organization_id"
+        )
+        assert result.affected_rows > 0
+
+    async def test_summary_table_queryable(self, client: AsyncIyreeClient):
+        result = await client.dwh.raw_sql(
+            f"SELECT organization_id, balance FROM {SUMMARY_TABLE} LIMIT 5"
+        )
+        assert result.row_count > 0
+
+    async def test_to_dataframe(self, client: AsyncIyreeClient):
+        result = await client.dwh.raw_sql(
+            f"SELECT organization_id, balance FROM {TABLE} LIMIT 5"
+        )
+        df = result.to_dataframe()
+        assert len(df) <= 5
+        assert "organization_id" in df.columns
+
+    async def test_show_tables(self, client: AsyncIyreeClient):
+        result = await client.dwh.raw_sql("SHOW TABLES")
+        assert len(result.columns) >= 1
+
+
+# ══════════════════════════════════════════════════════════════════════
 # DWH — Stream Load (insert)
 # ══════════════════════════════════════════════════════════════════════
 
@@ -136,15 +204,15 @@ class TestAsyncDwhInsertIntegration:
         label = f"sdk_async_json_{uuid.uuid4().hex[:12]}"
         data = [
             {
-                "organization_id": 8888, "terminal_group_id": 111,
-                "product_id": 222, "product_size_id": 3,
-                "date_add": "2025-03-15", "loaded_at": "2025-03-15 12:00:00",
+                "organization_id": "async-org-8888", "terminal_group_id": "tg-111",
+                "product_id": "p-222", "product_size_id": "s-3",
+                "date_add": "2025-03-15 00:00:00", "loaded_at": "2025-03-15",
                 "balance": 42.5,
             },
             {
-                "organization_id": 8889, "terminal_group_id": 112,
-                "product_id": 223, "product_size_id": 4,
-                "date_add": "2025-03-16", "loaded_at": "2025-03-16 12:00:00",
+                "organization_id": "async-org-8889", "terminal_group_id": "tg-112",
+                "product_id": "p-223", "product_size_id": "s-4",
+                "date_add": "2025-03-16 00:00:00", "loaded_at": "2025-03-16",
                 "balance": 99.9,
             },
         ]

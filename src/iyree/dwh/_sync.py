@@ -7,10 +7,12 @@ from typing import Any, Dict, List, Optional
 
 from iyree._config import IyreeConfig
 from iyree._http._sync import HttpTransport
-from iyree._types import DwhQueryResult, StreamLoadResult
+from iyree._types import DwhQueryResult, DwhRawSqlResult, StreamLoadResult
 from iyree.dwh._common import (
+    build_raw_sql_request_body,
     build_sql_request_body,
     parse_ndjson_lines,
+    parse_raw_sql_ndjson_lines,
     parse_stream_load_response,
     prepare_insert_data,
     prepare_stream_load_headers,
@@ -68,6 +70,40 @@ class DwhClient:
             lines: List[str] = list(response.iter_lines())
 
         return parse_ndjson_lines(lines)
+
+    def raw_sql(self, query: str) -> DwhRawSqlResult:
+        """Execute a SQL statement via the streaming ``/rawSql`` endpoint.
+
+        Unlike :meth:`sql`, this endpoint supports **all** SQL statement types
+        (SELECT, INSERT, CREATE, DROP, ALTER, etc.) and streams results as
+        NDJSON, making it suitable for large result sets and DDL/DML.
+
+        Args:
+            query: SQL statement to execute.
+
+        Returns:
+            :class:`DwhRawSqlResult` with rows (for SELECT) or
+            ``affected_rows`` (for DML/DDL).
+
+        Raises:
+            IyreeError: On query failure or mid-stream error.
+        """
+        body = build_raw_sql_request_body(query)
+        url = f"{self._http._base_url}/api/v1/dwh/rawSql"
+        headers = {**self._http._auth_headers, "Content-Type": "application/json"}
+
+        with self._http._client.stream(
+            "POST", url, json=body, headers=headers,
+        ) as response:
+            if response.status_code >= 400:
+                from iyree._http._common import map_status_to_exception, parse_response_body
+                raw = response.read()
+                raise map_status_to_exception(
+                    response.status_code, parse_response_body(raw),
+                )
+            lines: List[str] = list(response.iter_lines())
+
+        return parse_raw_sql_ndjson_lines(lines)
 
     def insert(
         self,

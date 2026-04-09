@@ -125,6 +125,138 @@ async with AsyncIyreeClient(api_key="my-key") as client:
 
 ---
 
+## `raw_sql`
+
+Execute any SQL statement against StarRocks via the streaming `/rawSql` endpoint. Unlike [`sql()`](#sql), this method supports **all** SQL statement types — including `INSERT INTO ... SELECT`, `CREATE`, `ALTER`, `DROP`, `DELETE`, and more.
+
+<Warning>
+  Use `raw_sql()` for DML/DDL operations that `sql()` does not support. For `SELECT` queries, prefer [`sql()`](#sql) — it returns richer metadata (column types, statistics, connection ID). For inserting data directly (from your application), prefer [`insert()`](#insert) which uses the optimized Stream Load path.
+</Warning>
+
+Common use cases:
+- `INSERT INTO ... SELECT` — transform and load data between tables
+- `INSERT INTO ... SELECT * FROM FILES(...)` — load data from external files
+- `DELETE FROM` — delete rows by condition
+- `CREATE TABLE`, `ALTER TABLE`, `DROP TABLE` — DDL operations
+
+```python
+result = client.dwh.raw_sql(
+    "INSERT INTO analytics.orders_agg SELECT region, COUNT(*) FROM orders GROUP BY region"
+)
+print(f"Affected rows: {result.affected_rows}")
+```
+
+### Parameters
+
+<ResponseField name="query" type="str" required>
+  SQL statement to execute. Any valid StarRocks SQL is accepted.
+</ResponseField>
+
+### Returns `DwhRawSqlResult`
+
+The result adapts to the statement type. For `SELECT`-like statements, `columns` and `rows` are populated. For DML/DDL, `affected_rows` is populated instead.
+
+<ResponseField name="columns" type="List[str]">
+  Column names from the result. Empty for DML/DDL statements.
+</ResponseField>
+
+<ResponseField name="rows" type="List[Dict[str, Any]]">
+  Data rows as dictionaries (`{column_name: value}`). Empty for DML/DDL statements.
+</ResponseField>
+
+<ResponseField name="row_count" type="int" default="0">
+  Number of rows returned (for `SELECT`-like statements). `0` for DML/DDL.
+</ResponseField>
+
+<ResponseField name="affected_rows" type="int" default="0">
+  Number of rows affected (for DML/DDL statements). `0` for `SELECT`.
+</ResponseField>
+
+### Result methods
+
+<ResponseField name="to_dicts()" type="() -> List[Dict[str, Any]]">
+  Return rows as a list of `{column_name: value}` dicts. Since rows are already stored as dicts, this is an identity operation.
+
+  ```python
+  result = client.dwh.raw_sql("SHOW TABLES")
+  for row in result.to_dicts():
+      print(row)
+  ```
+</ResponseField>
+
+<ResponseField name="to_dataframe()" type="() -> pd.DataFrame">
+  Convert to a pandas DataFrame. Requires `iyree[pandas]`.
+
+  ```python
+  df = client.dwh.raw_sql("SHOW TABLES").to_dataframe()
+  ```
+</ResponseField>
+
+### Errors
+
+| Exception | Condition |
+|-----------|-----------|
+| `IyreeError` | Query failure or mid-stream error |
+| `IyreeAuthError` | Invalid API key |
+| `IyreeTimeoutError` | Request timed out |
+
+### Examples
+
+<CodeGroup>
+
+```python INSERT INTO SELECT
+result = client.dwh.raw_sql("""
+    INSERT INTO analytics.daily_revenue
+    SELECT DATE(created_at) AS day, SUM(amount) AS revenue
+    FROM orders
+    WHERE created_at >= '2024-01-01'
+    GROUP BY DATE(created_at)
+""")
+print(f"Affected rows: {result.affected_rows}")
+```
+
+```python INSERT INTO SELECT FROM FILES
+result = client.dwh.raw_sql("""
+    INSERT INTO staging.events
+    SELECT * FROM FILES(
+        'path' = 's3://bucket/data/events/*.parquet',
+        'format' = 'parquet'
+    )
+""")
+print(f"Loaded {result.affected_rows} rows from external files")
+```
+
+```python DELETE FROM
+result = client.dwh.raw_sql("""
+    DELETE FROM orders WHERE status = 'cancelled' AND created_at < '2023-01-01'
+""")
+print(f"Deleted {result.affected_rows} rows")
+```
+
+```python DDL
+client.dwh.raw_sql("""
+    CREATE TABLE IF NOT EXISTS analytics.daily_revenue (
+        day DATE,
+        revenue DECIMAL(18, 2)
+    )
+    DISTRIBUTED BY HASH(day)
+""")
+```
+
+```python Async
+from iyree import AsyncIyreeClient
+
+async with AsyncIyreeClient(api_key="my-key") as client:
+    result = await client.dwh.raw_sql(
+        "DELETE FROM logs WHERE created_at < '2024-01-01'"
+    )
+    print(f"Deleted {result.affected_rows} rows")
+```
+
+</CodeGroup>
+
+---
+
 ## `insert`
 
 Insert data into a StarRocks table via Stream Load. Supports CSV strings, raw bytes, JSON lists, and pandas DataFrames.

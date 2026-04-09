@@ -52,6 +52,7 @@ from iyree._types import (
     ColumnMeta,
     CubeQueryResult,
     DwhQueryResult,
+    DwhRawSqlResult,
     KvDocument,
     KvListResult,
     S3CopyResult,
@@ -164,6 +165,7 @@ __all__ = [
     "IyreeS3Error",
     # Result types
     "DwhQueryResult",
+    "DwhRawSqlResult",
     "ColumnMeta",
     "StreamLoadResult",
     "CubeQueryResult",

@@ -22,13 +22,14 @@ from iyree import (
 pytestmark = pytest.mark.integration
 
 GATEWAY_HOST = "http://localhost:9080"
-API_KEY = "iyree_sk_ZJTdq9HGV_6sgpBRb0fiFHmj7ht_3R8zJ3WUy4wIZDqfdN47j4PcMQ"
+API_KEY = "iyree_sk_pYCVsTLC02TF3QWllqUco1ldb60-AZzYreANqJDlR_FwwPELqfHUUQ"
 
 TESTS_DIR = Path(__file__).parent
 S3_UPLOAD_DIR = TESTS_DIR / "s3" / "objects_to_upload"
 S3_DOWNLOAD_DIR = TESTS_DIR / "s3" / "downloaded_objects"
 
 TABLE = "fact_product_balance"
+SUMMARY_TABLE = "fact_product_balance_summary"
 COLUMNS = [
     "organization_id", "terminal_group_id", "product_id",
     "product_size_id", "date_add", "loaded_at", "balance",
@@ -45,7 +46,8 @@ except ImportError:
 def generate_fact_rows(n: int, *, org_offset: int = 9000) -> pd.DataFrame:
     """Generate *n* rows compatible with fact_product_balance.
 
-    Integer columns are explicitly typed to avoid float CSV serialization.
+    All ID columns are VARCHAR(64) in StarRocks, so we produce strings.
+    ``date_add`` is DATETIME, ``loaded_at`` is DATE.
     """
     rng = random.Random(42)
     base_date = datetime(2025, 6, 1)
@@ -54,18 +56,15 @@ def generate_fact_rows(n: int, *, org_offset: int = 9000) -> pd.DataFrame:
         day_offset = rng.randint(0, 180)
         dt = base_date + timedelta(days=day_offset)
         rows.append({
-            "organization_id": org_offset + rng.randint(1, 50),
-            "terminal_group_id": rng.randint(100, 999),
-            "product_id": rng.randint(1000, 9999),
-            "product_size_id": rng.randint(1, 20),
-            "date_add": dt.strftime("%Y-%m-%d"),
-            "loaded_at": dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "organization_id": str(org_offset + rng.randint(1, 50)),
+            "terminal_group_id": str(rng.randint(100, 999)),
+            "product_id": str(rng.randint(1000, 9999)),
+            "product_size_id": str(rng.randint(1, 20)),
+            "date_add": dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "loaded_at": dt.strftime("%Y-%m-%d"),
             "balance": round(rng.uniform(0, 1000), 2),
         })
-    df = pd.DataFrame(rows)
-    for col in ["organization_id", "terminal_group_id", "product_id", "product_size_id"]:
-        df[col] = df[col].astype(int)
-    return df
+    return pd.DataFrame(rows)
 
 
 @pytest.fixture(autouse=True)
@@ -290,6 +289,196 @@ class TestDwhSqlIntegration:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# DWH — Raw SQL (streaming /rawSql endpoint)
+# ══════════════════════════════════════════════════════════════════════
+
+class TestDwhRawSqlIntegration:
+    """Tests for the streaming raw_sql() method that supports all SQL types."""
+
+    # ── SELECT queries ───────────────────────────────────────────────
+
+    def test_select_query(self, client: IyreeClient):
+        result = client.dwh.raw_sql(
+            f"SELECT organization_id, balance FROM {TABLE} LIMIT 5"
+        )
+        assert len(result.columns) == 2
+        assert "organization_id" in result.columns
+        assert "balance" in result.columns
+        assert len(result.rows) <= 5
+        assert result.row_count <= 5
+        for row in result.rows:
+            assert "organization_id" in row
+            assert "balance" in row
+
+    def test_select_one(self, client: IyreeClient):
+        result = client.dwh.raw_sql("SELECT 1 AS n, 'hello' AS greeting")
+        assert result.columns == ["n", "greeting"]
+        assert len(result.rows) == 1
+        assert result.rows[0]["n"] == 1
+        assert result.rows[0]["greeting"] == "hello"
+        assert result.row_count == 1
+
+    def test_select_empty(self, client: IyreeClient):
+        result = client.dwh.raw_sql(f"SELECT * FROM {TABLE} WHERE 1 = 0")
+        assert len(result.columns) > 0
+        assert result.rows == []
+        assert result.row_count == 0
+
+    def test_aggregation(self, client: IyreeClient):
+        result = client.dwh.raw_sql(
+            f"SELECT organization_id, COUNT(*) AS cnt, SUM(balance) AS total "
+            f"FROM {TABLE} "
+            f"GROUP BY organization_id "
+            f"ORDER BY cnt DESC LIMIT 5"
+        )
+        assert "cnt" in result.columns
+        assert "total" in result.columns
+        for row in result.rows:
+            assert row["cnt"] > 0
+
+    def test_order_by(self, client: IyreeClient):
+        result = client.dwh.raw_sql(
+            f"SELECT balance FROM {TABLE} "
+            f"WHERE balance IS NOT NULL "
+            f"ORDER BY balance ASC LIMIT 20"
+        )
+        balances = [float(row["balance"]) for row in result.rows]
+        assert balances == sorted(balances)
+
+    def test_subquery(self, client: IyreeClient):
+        result = client.dwh.raw_sql(
+            f"SELECT sub.org_id, sub.total "
+            f"FROM ("
+            f"  SELECT organization_id AS org_id, SUM(balance) AS total "
+            f"  FROM {TABLE} GROUP BY organization_id"
+            f") sub "
+            f"WHERE sub.total > 0 "
+            f"ORDER BY sub.total DESC LIMIT 5"
+        )
+        assert "org_id" in result.columns
+        assert "total" in result.columns
+        for row in result.rows:
+            assert float(row["total"]) > 0
+
+    def test_window_function(self, client: IyreeClient):
+        result = client.dwh.raw_sql(
+            f"SELECT organization_id, balance, "
+            f"  ROW_NUMBER() OVER (PARTITION BY organization_id ORDER BY balance DESC) AS rn "
+            f"FROM {TABLE} LIMIT 50"
+        )
+        assert "rn" in result.columns
+
+    def test_case_expression(self, client: IyreeClient):
+        result = client.dwh.raw_sql(
+            f"SELECT balance, "
+            f"  CASE WHEN balance >= 500 THEN 'high' "
+            f"       WHEN balance >= 100 THEN 'medium' "
+            f"       ELSE 'low' END AS tier "
+            f"FROM {TABLE} LIMIT 20"
+        )
+        assert "tier" in result.columns
+        for row in result.rows:
+            assert row["tier"] in ("high", "medium", "low")
+
+    # ── Result conversion ────────────────────────────────────────────
+
+    def test_to_dicts(self, client: IyreeClient):
+        result = client.dwh.raw_sql(f"SELECT balance FROM {TABLE} LIMIT 3")
+        dicts = result.to_dicts()
+        assert isinstance(dicts, list)
+        if dicts:
+            assert "balance" in dicts[0]
+
+    def test_to_dataframe(self, client: IyreeClient):
+        result = client.dwh.raw_sql(
+            f"SELECT organization_id, balance FROM {TABLE} LIMIT 10"
+        )
+        df = result.to_dataframe()
+        assert list(df.columns) == ["organization_id", "balance"]
+        assert len(df) <= 10
+
+    # ── DML: INSERT INTO values ──────────────────────────────────────
+
+    def test_insert_values(self, client: IyreeClient):
+        """Insert specific rows into fact_product_balance via raw_sql."""
+        result = client.dwh.raw_sql(
+            f"INSERT INTO {TABLE} "
+            f"(organization_id, terminal_group_id, product_id, "
+            f" product_size_id, date_add, loaded_at, balance) "
+            f"VALUES "
+            f"('sdk-raw-org-1', 'tg-100', 'p-200', 's-1', "
+            f" '2025-06-01 00:00:00', '2025-06-01', 123.45), "
+            f"('sdk-raw-org-2', 'tg-101', 'p-201', 's-2', "
+            f" '2025-06-02 00:00:00', '2025-06-02', 678.90)"
+        )
+        assert result.affected_rows == 2
+        assert result.rows == []
+
+    def test_inserted_values_are_queryable(self, client: IyreeClient):
+        """Verify the rows inserted by the previous test are queryable."""
+        result = client.dwh.raw_sql(
+            f"SELECT organization_id, balance FROM {TABLE} "
+            f"WHERE organization_id IN ('sdk-raw-org-1', 'sdk-raw-org-2')"
+        )
+        found_orgs = {row["organization_id"] for row in result.rows}
+        assert "sdk-raw-org-1" in found_orgs or "sdk-raw-org-2" in found_orgs
+
+    # ── DML: INSERT INTO ... SELECT (aggregation into summary) ───────
+
+    def test_insert_as_select_into_summary(self, client: IyreeClient):
+        """Aggregate fact_product_balance and insert into the summary table."""
+        insert_result = client.dwh.raw_sql(
+            f"INSERT INTO {SUMMARY_TABLE} (organization_id, balance) "
+            f"SELECT organization_id, SUM(balance) AS balance "
+            f"FROM {TABLE} "
+            f"GROUP BY organization_id"
+        )
+        assert insert_result.affected_rows > 0
+
+    def test_summary_table_has_data(self, client: IyreeClient):
+        """Verify the summary table was populated by the previous INSERT."""
+        result = client.dwh.raw_sql(
+            f"SELECT organization_id, balance FROM {SUMMARY_TABLE} LIMIT 10"
+        )
+        assert result.row_count > 0
+        for row in result.rows:
+            assert "organization_id" in row
+            assert "balance" in row
+
+    def test_summary_matches_source_aggregation(self, client: IyreeClient):
+        """Cross-check a summary row against the source aggregation."""
+        summary = client.dwh.raw_sql(
+            f"SELECT organization_id, balance FROM {SUMMARY_TABLE} LIMIT 1"
+        )
+        if not summary.rows:
+            pytest.skip("Summary table is empty")
+
+        org_id = summary.rows[0]["organization_id"]
+        source = client.dwh.raw_sql(
+            f"SELECT SUM(balance) AS total FROM {TABLE} "
+            f"WHERE organization_id = '{org_id}'"
+        )
+        assert float(summary.rows[0]["balance"]) == pytest.approx(
+            float(source.rows[0]["total"]), rel=1e-4,
+        )
+
+    # ── SHOW / metadata ─────────────────────────────────────────────
+
+    def test_show_tables(self, client: IyreeClient):
+        result = client.dwh.raw_sql("SHOW TABLES")
+        assert len(result.columns) >= 1
+        assert result.row_count >= 0
+
+    # ── Large streaming result ───────────────────────────────────────
+
+    def test_large_select(self, client: IyreeClient):
+        """Verify streaming works for larger result sets."""
+        result = client.dwh.raw_sql(f"SELECT * FROM {TABLE} LIMIT 1000")
+        assert len(result.rows) <= 1000
+        assert result.row_count == len(result.rows)
+
+
+# ══════════════════════════════════════════════════════════════════════
 # DWH — Stream Load (insert)
 # ══════════════════════════════════════════════════════════════════════
 
@@ -297,9 +486,9 @@ class TestDwhInsertIntegration:
     def test_json_insert_single(self, client: IyreeClient):
         label = f"sdk_test_{uuid.uuid4().hex[:12]}"
         data = [{
-            "organization_id": 2, "terminal_group_id": 200,
-            "product_id": 300, "product_size_id": 400,
-            "date_add": "2025-01-02", "loaded_at": "2025-01-02 00:00:00",
+            "organization_id": "org-2", "terminal_group_id": "tg-200",
+            "product_id": "p-300", "product_size_id": "s-400",
+            "date_add": "2025-01-02 00:00:00", "loaded_at": "2025-01-02",
             "balance": 50.0,
         }]
         result = client.dwh.insert(TABLE, data, label=label)
@@ -310,9 +499,9 @@ class TestDwhInsertIntegration:
         label = f"sdk_test_{uuid.uuid4().hex[:12]}"
         data = [
             {
-                "organization_id": i, "terminal_group_id": 100 + i,
-                "product_id": 1000 + i, "product_size_id": 1,
-                "date_add": "2025-04-01", "loaded_at": "2025-04-01 00:00:00",
+                "organization_id": f"org-{i}", "terminal_group_id": f"tg-{100 + i}",
+                "product_id": f"p-{1000 + i}", "product_size_id": "s-1",
+                "date_add": "2025-04-01 00:00:00", "loaded_at": "2025-04-01",
                 "balance": round(10.5 * i, 2),
             }
             for i in range(5, 10)
@@ -344,7 +533,7 @@ class TestDwhInsertIntegration:
         """Verify rows from bulk inserts are queryable."""
         result = client.dwh.sql(
             f"SELECT COUNT(*) AS cnt FROM {TABLE} "
-            f"WHERE organization_id BETWEEN 9000 AND 9050"
+            f"WHERE organization_id LIKE '90%'"
         )
         assert int(result.rows[0][0]) > 0
 
