@@ -3,7 +3,7 @@ title: "IYREE Python SDK"
 description: "Python SDK for the IYREE BI analytics platform"
 ---
 
-The IYREE Python SDK provides a convenient interface to the IYREE platform, including DWH (StarRocks), Cube.js analytics, S3 object storage, and a Key-Value store.
+The IYREE Python SDK provides a convenient interface to the IYREE platform, including DWH (StarRocks), Cube.js analytics, S3 object storage, a Key-Value store, and Reports.
 
 ## Installation
 
@@ -93,7 +93,7 @@ async with AsyncIyreeClient(api_key="my-key") as client:
 
 ## Sub-clients
 
-After initialization, access the four sub-clients as properties:
+After initialization, access the sub-clients as properties:
 
 | Property | Description |
 |----------|-------------|
@@ -101,6 +101,7 @@ After initialization, access the four sub-clients as properties:
 | `client.cube` | [Cube](/cube) — Cube.js analytics queries with a typed query builder |
 | `client.s3` | [S3](/s3) — Object storage (upload, download, list, copy, delete) |
 | `client.kv` | [KV](/kv) — Key-Value document store |
+| `client.reports` | [Reports](/reports) — Create reports from IYREE functions and jobs |
 
 ---
 

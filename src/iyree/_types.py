@@ -268,3 +268,80 @@ class KvListResult:
     items: List[KvDocument]
     cursor: Optional[str]
     has_more: bool
+
+
+# ---------------------------------------------------------------------------
+# Reports
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ReportPeriod:
+    """A date range used by report ``main_period`` / ``compare_period`` fields."""
+
+    date_from: datetime
+    date_to: datetime
+
+
+@dataclass
+class ReportSourceFunction:
+    """Function metadata embedded in a :class:`Report` response."""
+
+    id: str
+    name: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    creation_type: Optional[str] = None
+    function_type: Optional[str] = None
+    status: Optional[str] = None
+
+
+@dataclass
+class ReportSourceJob:
+    """Job metadata embedded in a :class:`Report` response."""
+
+    id: str
+    script_path: Optional[str] = None
+    job_kind: Optional[str] = None
+    trigger_detail: Optional[Dict[str, Any]] = None
+    status: Optional[str] = None
+    success: Optional[bool] = None
+    created_at: Optional[datetime] = None
+    started_at: Optional[datetime] = None
+    duration_ms: Optional[int] = None
+    mem_peak_kb: Optional[int] = None
+    is_flow_step: Optional[bool] = None
+    runnable_type: Optional[str] = None
+    runnable_id: Optional[str] = None
+
+
+@dataclass
+class Report:
+    """A report returned by the IYREE reports API.
+
+    Attributes:
+        id: Server-assigned report identifier.
+        name: Report name.
+        title: Report title.
+        description: Report description.
+        creation_type: How the report was created (e.g. ``"PREDEFINED"``).
+        source_function: Function the report was generated from.
+        locations: Location identifiers the report is scoped to.
+        main_period: Primary date range covered by the report.
+        compare_period: Optional comparison date range.
+        summary: Optional summary text.
+        html_content: Rendered HTML payload.
+        source_job: Job that produced this report.
+    """
+
+    id: str
+    name: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    creation_type: Optional[str] = None
+    source_function: Optional[ReportSourceFunction] = None
+    locations: List[int] = field(default_factory=list)
+    main_period: Optional[ReportPeriod] = None
+    compare_period: Optional[ReportPeriod] = None
+    summary: Optional[str] = None
+    html_content: Optional[str] = None
+    source_job: Optional[ReportSourceJob] = None

@@ -1,0 +1,325 @@
+---
+title: "Reports"
+description: "Create reports backed by IYREE functions and jobs"
+---
+
+The Reports sub-client lets you create reports tied to an IYREE source function and the job that produced their rendered HTML.
+
+```python
+from datetime import datetime
+from iyree import IyreeClient, ReportPeriod
+
+with IyreeClient(api_key="my-key") as client:
+    report = client.reports.create(
+        main_period=ReportPeriod(
+            date_from=datetime(2026, 1, 1),
+            date_to=datetime(2026, 1, 31),
+        ),
+        function_path="f/iyree/reports/weekly",
+        job_id="job-123",
+        html_content="<html><body>...</body></html>",
+    )
+    print(report.id)
+```
+
+---
+
+## `create`
+
+Create a new report. The SDK serializes `datetime` instances inside `main_period` and `compare_period` to ISO-8601 strings automatically, and drops any optional argument left as `None` from the request body.
+
+```python
+report = client.reports.create(
+    main_period=ReportPeriod(
+        date_from=datetime(2026, 1, 1),
+        date_to=datetime(2026, 1, 31),
+    ),
+    function_path="f/iyree/reports/weekly",
+    job_id="job-123",
+    html_content="<html><body>Weekly summary</body></html>",
+    title="Weekly summary",
+    locations=[1, 2, 3],
+)
+```
+
+### Parameters
+
+<ResponseField name="main_period" type="ReportPeriod | Dict[str, Any]" required>
+  Primary date range covered by the report. Pass a `ReportPeriod` dataclass or a plain dict with `date_from` and `date_to` keys (`datetime` values are accepted and serialized automatically).
+
+  ```python
+  from iyree import ReportPeriod
+  main_period = ReportPeriod(
+      date_from=datetime(2026, 1, 1),
+      date_to=datetime(2026, 1, 31),
+  )
+  # or equivalently
+  main_period = {"date_from": datetime(2026, 1, 1), "date_to": datetime(2026, 1, 31)}
+  ```
+</ResponseField>
+
+<ResponseField name="function_path" type="str" required>
+  Path identifying the source function that generated the report (e.g. `"f/iyree/reports/weekly"`).
+</ResponseField>
+
+<ResponseField name="job_id" type="str" required>
+  Identifier of the job that produced the report.
+</ResponseField>
+
+<ResponseField name="html_content" type="str" required>
+  Rendered HTML payload of the report.
+</ResponseField>
+
+<ResponseField name="title" type="str">
+  Optional report title.
+</ResponseField>
+
+<ResponseField name="description" type="str">
+  Optional report description.
+</ResponseField>
+
+<ResponseField name="locations" type="List[int]">
+  Optional location identifiers the report is scoped to.
+</ResponseField>
+
+<ResponseField name="compare_period" type="ReportPeriod | Dict[str, Any]">
+  Optional comparison date range. Same shape as `main_period`.
+</ResponseField>
+
+<ResponseField name="summary" type="str">
+  Optional summary text.
+</ResponseField>
+
+<ResponseField name="name" type="str">
+  Optional report name.
+</ResponseField>
+
+<ResponseField name="workspace_id" type="str">
+  Optional workspace identifier.
+</ResponseField>
+
+### Returns `Report`
+
+<ResponseField name="id" type="str">
+  Server-assigned report identifier.
+</ResponseField>
+
+<ResponseField name="name" type="str">
+  Report name.
+</ResponseField>
+
+<ResponseField name="title" type="str">
+  Report title.
+</ResponseField>
+
+<ResponseField name="description" type="str">
+  Report description.
+</ResponseField>
+
+<ResponseField name="creation_type" type="str">
+  How the report was created (e.g. `"PREDEFINED"`).
+</ResponseField>
+
+<ResponseField name="source_function" type="ReportSourceFunction">
+  Function the report was generated from, or `None` if not provided by the server.
+
+  <Expandable title="ReportSourceFunction">
+    <ResponseField name="id" type="str">
+      Function identifier.
+    </ResponseField>
+    <ResponseField name="name" type="str">
+      Function name.
+    </ResponseField>
+    <ResponseField name="title" type="str">
+      Function title.
+    </ResponseField>
+    <ResponseField name="description" type="str">
+      Function description.
+    </ResponseField>
+    <ResponseField name="creation_type" type="str">
+      How the function was created (e.g. `"PREDEFINED"`).
+    </ResponseField>
+    <ResponseField name="function_type" type="str">
+      Function type (e.g. `"basic"`).
+    </ResponseField>
+    <ResponseField name="status" type="str">
+      Function status (e.g. `"active"`).
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="locations" type="List[int]">
+  Location identifiers the report is scoped to. Empty list if none.
+</ResponseField>
+
+<ResponseField name="main_period" type="ReportPeriod">
+  Primary date range covered by the report.
+
+  <Expandable title="ReportPeriod">
+    <ResponseField name="date_from" type="datetime">
+      Start of the period.
+    </ResponseField>
+    <ResponseField name="date_to" type="datetime">
+      End of the period.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+<ResponseField name="compare_period" type="ReportPeriod">
+  Optional comparison date range, or `None` when not set. Same shape as `main_period`.
+</ResponseField>
+
+<ResponseField name="summary" type="str">
+  Summary text.
+</ResponseField>
+
+<ResponseField name="html_content" type="str">
+  Rendered HTML payload returned by the server.
+</ResponseField>
+
+<ResponseField name="source_job" type="ReportSourceJob">
+  Job that produced this report, or `None` if not provided by the server.
+
+  <Expandable title="ReportSourceJob">
+    <ResponseField name="id" type="str">
+      Job identifier.
+    </ResponseField>
+    <ResponseField name="script_path" type="str">
+      Path of the executed script.
+    </ResponseField>
+    <ResponseField name="job_kind" type="str">
+      Job kind (e.g. `"unknown"`).
+    </ResponseField>
+    <ResponseField name="trigger_detail" type="Dict[str, Any]">
+      Free-form trigger details (e.g. `{"type": "webapp"}`).
+    </ResponseField>
+    <ResponseField name="status" type="str">
+      Job status (e.g. `"running"`).
+    </ResponseField>
+    <ResponseField name="success" type="bool">
+      Whether the job finished successfully.
+    </ResponseField>
+    <ResponseField name="created_at" type="datetime">
+      Job creation timestamp.
+    </ResponseField>
+    <ResponseField name="started_at" type="datetime">
+      Job start timestamp.
+    </ResponseField>
+    <ResponseField name="duration_ms" type="int">
+      Total job duration in milliseconds.
+    </ResponseField>
+    <ResponseField name="mem_peak_kb" type="int">
+      Peak memory usage in kilobytes.
+    </ResponseField>
+    <ResponseField name="is_flow_step" type="bool">
+      Whether the job is a step inside a flow.
+    </ResponseField>
+    <ResponseField name="runnable_type" type="str">
+      Type of the underlying runnable (e.g. `"function"`).
+    </ResponseField>
+    <ResponseField name="runnable_id" type="str">
+      Identifier of the underlying runnable.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Errors
+
+| Exception | Condition |
+|-----------|-----------|
+| `IyreeValidationError` | HTTP 422 — invalid payload |
+| `IyreeNotFoundError` | HTTP 404 — referenced function or job not found |
+| `IyreeAuthError` | Invalid API key |
+| `IyreeTimeoutError` | Request timed out |
+| `IyreeError` | Other HTTP errors |
+
+### Examples
+
+<CodeGroup>
+
+```python Minimal
+from datetime import datetime
+from iyree import IyreeClient, ReportPeriod
+
+with IyreeClient(api_key="my-key") as client:
+    report = client.reports.create(
+        main_period=ReportPeriod(
+            date_from=datetime(2026, 1, 1),
+            date_to=datetime(2026, 1, 31),
+        ),
+        function_path="f/iyree/reports/weekly",
+        job_id="job-123",
+        html_content="<html><body>...</body></html>",
+    )
+    print(report.id)
+```
+
+```python With compare_period
+from datetime import datetime
+from iyree import IyreeClient, ReportPeriod
+
+with IyreeClient(api_key="my-key") as client:
+    report = client.reports.create(
+        main_period=ReportPeriod(
+            date_from=datetime(2026, 1, 1),
+            date_to=datetime(2026, 1, 31),
+        ),
+        compare_period=ReportPeriod(
+            date_from=datetime(2025, 12, 1),
+            date_to=datetime(2025, 12, 31),
+        ),
+        function_path="f/iyree/reports/weekly",
+        job_id="job-123",
+        html_content="<html><body>...</body></html>",
+        title="January vs December",
+        summary="Month-over-month comparison",
+    )
+    print(report.compare_period.date_from)
+```
+
+```python Dict periods
+from datetime import datetime
+
+report = client.reports.create(
+    main_period={
+        "date_from": datetime(2026, 2, 1),
+        "date_to": datetime(2026, 2, 28),
+    },
+    function_path="f/iyree/reports/weekly",
+    job_id="job-123",
+    html_content="<html><body>...</body></html>",
+)
+```
+
+```python Scoped to locations
+report = client.reports.create(
+    main_period=ReportPeriod(
+        date_from=datetime(2026, 1, 1),
+        date_to=datetime(2026, 1, 31),
+    ),
+    function_path="f/iyree/reports/weekly",
+    job_id="job-123",
+    html_content="<html><body>...</body></html>",
+    locations=[1, 2, 3],
+    workspace_id="ws_42",
+)
+```
+
+```python Async
+from datetime import datetime
+from iyree import AsyncIyreeClient, ReportPeriod
+
+async with AsyncIyreeClient(api_key="my-key") as client:
+    report = await client.reports.create(
+        main_period=ReportPeriod(
+            date_from=datetime(2026, 1, 1),
+            date_to=datetime(2026, 1, 31),
+        ),
+        function_path="f/iyree/reports/weekly",
+        job_id="job-123",
+        html_content="<html><body>...</body></html>",
+    )
+    print(report.id)
+```
+
+</CodeGroup>

@@ -9,14 +9,16 @@ from iyree._http._async import AsyncHttpTransport
 from iyree.cube._async import AsyncCubeClient
 from iyree.dwh._async import AsyncDwhClient
 from iyree.kv._async import AsyncKvClient
+from iyree.reports._async import AsyncReportsClient
 from iyree.s3._async import AsyncS3Client
 
 
 class AsyncIyreeClient:
     """Asynchronous entry point for the IYREE SDK.
 
-    Sub-clients (:attr:`dwh`, :attr:`cube`, :attr:`s3`, :attr:`kv`) are lazily
-    instantiated on first access and share the underlying HTTP session.
+    Sub-clients (:attr:`dwh`, :attr:`cube`, :attr:`s3`, :attr:`kv`,
+    :attr:`reports`) are lazily instantiated on first access and share the
+    underlying HTTP session.
 
     The constructor is **not** async — it stores configuration and eagerly
     creates the ``httpx.AsyncClient``.  Call :meth:`close` or use
@@ -63,6 +65,7 @@ class AsyncIyreeClient:
         self._cube: Optional[AsyncCubeClient] = None
         self._s3: Optional[AsyncS3Client] = None
         self._kv: Optional[AsyncKvClient] = None
+        self._reports: Optional[AsyncReportsClient] = None
 
     # ------------------------------------------------------------------
     # Lazy sub-client properties
@@ -95,6 +98,13 @@ class AsyncIyreeClient:
         if self._kv is None:
             self._kv = AsyncKvClient(self._http, self._config)
         return self._kv
+
+    @property
+    def reports(self) -> AsyncReportsClient:
+        """Reports sub-client."""
+        if self._reports is None:
+            self._reports = AsyncReportsClient(self._http, self._config)
+        return self._reports
 
     # ------------------------------------------------------------------
     # Lifecycle

@@ -17,12 +17,13 @@ from iyree import (
     IyreeClient,
     IyreeNotFoundError,
     IyreeError,
+    ReportPeriod,
 )
 
 pytestmark = pytest.mark.integration
 
 GATEWAY_HOST = "http://localhost:9080"
-API_KEY = "iyree_sk_pYCVsTLC02TF3QWllqUco1ldb60-AZzYreANqJDlR_FwwPELqfHUUQ"
+API_KEY = "iyree_sk_4QNwI_hwQ_r9LpSR5Sb7z96ygNmVa_7NQDdQFqs-375hBpARdvGQbA"
 
 TESTS_DIR = Path(__file__).parent
 S3_UPLOAD_DIR = TESTS_DIR / "s3" / "objects_to_upload"
@@ -1133,6 +1134,92 @@ class TestKvIntegration:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# Reports
+# ══════════════════════════════════════════════════════════════════════
+
+# Adjust these to valid identifiers in the target gateway environment
+# before running the reports integration tests.
+REPORT_FUNCTION_PATH = "f/kdojlnfcyhpodewhzwkgcwidztp/functions/ccblvrsguygocvtnjtinekmestgj"
+REPORT_JOB_ID = "019e413a-a718-5bba-c85f-cdb4d1adef6b"
+
+
+class TestReportsIntegration:
+    """End-to-end tests for ``client.reports.create(...)``."""
+
+    def _period(self) -> ReportPeriod:
+        return ReportPeriod(
+            date_from=datetime(2026, 1, 1),
+            date_to=datetime(2026, 1, 31),
+        )
+
+    def test_create_minimal(self, client: IyreeClient):
+        report = client.reports.create(
+            main_period=self._period(),
+            function_path=REPORT_FUNCTION_PATH,
+            job_id=REPORT_JOB_ID,
+            html_content="<html><body>integration</body></html>",
+        )
+        assert report.id
+        assert report.main_period is not None
+        assert report.main_period.date_from is not None
+        assert report.main_period.date_to is not None
+
+    def test_create_with_all_fields(self, client: IyreeClient):
+        main_period = self._period()
+        compare_period = ReportPeriod(
+            date_from=datetime(2025, 12, 1),
+            date_to=datetime(2025, 12, 31),
+        )
+        suffix = uuid.uuid4().hex[:8]
+        report = client.reports.create(
+            main_period=main_period,
+            function_path=REPORT_FUNCTION_PATH,
+            job_id=REPORT_JOB_ID,
+            html_content=f"<html><body>{suffix}</body></html>",
+            title=f"sdk-int-{suffix}",
+            description="created by sync integration test",
+            locations=[1, 2, 3],
+            compare_period=compare_period,
+            summary="integration summary",
+            name=f"sdk-int-name-{suffix}",
+        )
+        assert report.id
+        assert report.title == f"sdk-int-{suffix}"
+        assert report.name == f"sdk-int-name-{suffix}"
+        assert report.description == "created by sync integration test"
+        assert report.summary == "integration summary"
+        assert report.locations == [1, 2, 3]
+        assert report.compare_period is not None
+        assert report.compare_period.date_from is not None
+        assert report.compare_period.date_to is not None
+
+    def test_create_accepts_dict_period(self, client: IyreeClient):
+        report = client.reports.create(
+            main_period={
+                "date_from": datetime(2026, 2, 1),
+                "date_to": datetime(2026, 2, 28),
+            },
+            function_path=REPORT_FUNCTION_PATH,
+            job_id=REPORT_JOB_ID,
+            html_content="<html><body>dict period</body></html>",
+        )
+        assert report.id
+        assert report.main_period is not None
+
+    def test_create_response_nested_types(self, client: IyreeClient):
+        report = client.reports.create(
+            main_period=self._period(),
+            function_path=REPORT_FUNCTION_PATH,
+            job_id=REPORT_JOB_ID,
+            html_content="<html><body>nested</body></html>",
+        )
+        if report.source_function is not None:
+            assert report.source_function.id
+        if report.source_job is not None:
+            assert report.source_job.id
+
+
+# ══════════════════════════════════════════════════════════════════════
 # Module-level API (iyree.init / iyree.dwh / iyree.cube / ...)
 # ══════════════════════════════════════════════════════════════════════
 
@@ -1172,3 +1259,16 @@ class TestModuleLevelApiIntegration:
         doc = iyree.kv.get("myvar", doc_key)
         assert doc.data["module"] is True
         iyree.kv.delete("myvar", doc_key)
+
+    def test_reports_via_module(self):
+        import iyree
+        report = iyree.reports.create(
+            main_period=ReportPeriod(
+                date_from=datetime(2026, 1, 1),
+                date_to=datetime(2026, 1, 31),
+            ),
+            function_path=REPORT_FUNCTION_PATH,
+            job_id=REPORT_JOB_ID,
+            html_content="<html><body>module-api</body></html>",
+        )
+        assert report.id

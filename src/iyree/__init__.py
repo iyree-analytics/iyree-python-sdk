@@ -55,6 +55,10 @@ from iyree._types import (
     DwhRawSqlResult,
     KvDocument,
     KvListResult,
+    Report,
+    ReportPeriod,
+    ReportSourceFunction,
+    ReportSourceJob,
     S3CopyResult,
     S3DeleteError,
     S3DeleteResult,
@@ -82,7 +86,7 @@ from iyree.cube._querybuilder import (
 
 _default_client: Optional[IyreeClient] = None
 
-_SUB_CLIENTS = frozenset({"dwh", "cube", "s3", "kv"})
+_SUB_CLIENTS = frozenset({"dwh", "cube", "s3", "kv", "reports"})
 
 
 def init(
@@ -176,6 +180,10 @@ __all__ = [
     "S3DeleteError",
     "KvDocument",
     "KvListResult",
+    "Report",
+    "ReportPeriod",
+    "ReportSourceFunction",
+    "ReportSourceJob",
     # Query builder
     "Cube",
     "Measure",
@@ -197,6 +205,6 @@ __all__ = [
 # iyree.dwh / iyree.cube / iyree.s3 / iyree.kv and delegate to the
 # default client.  The subpackages remain in sys.modules, so explicit
 # imports like ``from iyree.dwh import DwhClient`` still resolve correctly.
-for _name in ("dwh", "cube", "s3", "kv"):
+for _name in ("dwh", "cube", "s3", "kv", "reports"):
     globals().pop(_name, None)
 del _name

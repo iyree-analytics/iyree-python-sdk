@@ -9,14 +9,16 @@ from iyree._http._sync import HttpTransport
 from iyree.cube._sync import CubeClient
 from iyree.dwh._sync import DwhClient
 from iyree.kv._sync import KvClient
+from iyree.reports._sync import ReportsClient
 from iyree.s3._sync import S3Client
 
 
 class IyreeClient:
     """Synchronous entry point for the IYREE SDK.
 
-    Sub-clients (:attr:`dwh`, :attr:`cube`, :attr:`s3`, :attr:`kv`) are lazily
-    instantiated on first access and share the underlying HTTP session.
+    Sub-clients (:attr:`dwh`, :attr:`cube`, :attr:`s3`, :attr:`kv`,
+    :attr:`reports`) are lazily instantiated on first access and share the
+    underlying HTTP session.
 
     Args:
         api_key: API key for gateway authentication.
@@ -59,6 +61,7 @@ class IyreeClient:
         self._cube: Optional[CubeClient] = None
         self._s3: Optional[S3Client] = None
         self._kv: Optional[KvClient] = None
+        self._reports: Optional[ReportsClient] = None
 
     # ------------------------------------------------------------------
     # Lazy sub-client properties
@@ -91,6 +94,13 @@ class IyreeClient:
         if self._kv is None:
             self._kv = KvClient(self._http, self._config)
         return self._kv
+
+    @property
+    def reports(self) -> ReportsClient:
+        """Reports sub-client."""
+        if self._reports is None:
+            self._reports = ReportsClient(self._http, self._config)
+        return self._reports
 
     # ------------------------------------------------------------------
     # Lifecycle

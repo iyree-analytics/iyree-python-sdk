@@ -14,6 +14,7 @@ import pytest
 from iyree import (
     AsyncIyreeClient,
     IyreeNotFoundError,
+    ReportPeriod,
 )
 from test_integration_sync import (
     GATEWAY_HOST,
@@ -22,6 +23,8 @@ from test_integration_sync import (
     SUMMARY_TABLE,
     COLUMNS,
     HAS_PYARROW,
+    REPORT_FUNCTION_PATH,
+    REPORT_JOB_ID,
     generate_fact_rows,
 )
 
@@ -549,3 +552,85 @@ class TestAsyncKvIntegration:
 
         for k in keys:
             await client.kv.delete(self.VARIABLE, k)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Reports
+# ══════════════════════════════════════════════════════════════════════
+
+class TestAsyncReportsIntegration:
+    """End-to-end tests for ``await client.reports.create(...)``."""
+
+    def _period(self) -> ReportPeriod:
+        from datetime import datetime
+        return ReportPeriod(
+            date_from=datetime(2026, 1, 1),
+            date_to=datetime(2026, 1, 31),
+        )
+
+    async def test_create_minimal(self, client: AsyncIyreeClient):
+        report = await client.reports.create(
+            main_period=self._period(),
+            function_path=REPORT_FUNCTION_PATH,
+            job_id=REPORT_JOB_ID,
+            html_content="<html><body>async integration</body></html>",
+        )
+        assert report.id
+        assert report.main_period is not None
+        assert report.main_period.date_from is not None
+        assert report.main_period.date_to is not None
+
+    async def test_create_with_all_fields(self, client: AsyncIyreeClient):
+        from datetime import datetime
+        suffix = uuid.uuid4().hex[:8]
+        compare_period = ReportPeriod(
+            date_from=datetime(2025, 12, 1),
+            date_to=datetime(2025, 12, 31),
+        )
+        report = await client.reports.create(
+            main_period=self._period(),
+            function_path=REPORT_FUNCTION_PATH,
+            job_id=REPORT_JOB_ID,
+            html_content=f"<html><body>{suffix}</body></html>",
+            title=f"async-sdk-int-{suffix}",
+            description="created by async integration test",
+            locations=[1, 2, 3],
+            compare_period=compare_period,
+            summary="async integration summary",
+            name=f"async-sdk-int-name-{suffix}",
+        )
+        assert report.id
+        assert report.title == f"async-sdk-int-{suffix}"
+        assert report.name == f"async-sdk-int-name-{suffix}"
+        assert report.description == "created by async integration test"
+        assert report.summary == "async integration summary"
+        assert report.locations == [1, 2, 3]
+        assert report.compare_period is not None
+        assert report.compare_period.date_from is not None
+        assert report.compare_period.date_to is not None
+
+    async def test_create_accepts_dict_period(self, client: AsyncIyreeClient):
+        from datetime import datetime
+        report = await client.reports.create(
+            main_period={
+                "date_from": datetime(2026, 2, 1),
+                "date_to": datetime(2026, 2, 28),
+            },
+            function_path=REPORT_FUNCTION_PATH,
+            job_id=REPORT_JOB_ID,
+            html_content="<html><body>async dict period</body></html>",
+        )
+        assert report.id
+        assert report.main_period is not None
+
+    async def test_create_response_nested_types(self, client: AsyncIyreeClient):
+        report = await client.reports.create(
+            main_period=self._period(),
+            function_path=REPORT_FUNCTION_PATH,
+            job_id=REPORT_JOB_ID,
+            html_content="<html><body>async nested</body></html>",
+        )
+        if report.source_function is not None:
+            assert report.source_function.id
+        if report.source_job is not None:
+            assert report.source_job.id
